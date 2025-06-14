@@ -7,7 +7,7 @@ from datetime import datetime
 
 # ========= 설정 =========
 symbol = "BTCUSDT_UMCBL"
-channel = "mix/candle1m"   # 선물 1분봉 채널
+channel = "candle1m"
 MAX_CANDLES = 200
 candles = []
 
@@ -84,6 +84,7 @@ async def connect_ws():
         sub = {
             "op": "subscribe",
             "args": [{
+                "instType": "UMCBL",
                 "channel": channel,
                 "instId": symbol
             }]
