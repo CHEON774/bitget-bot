@@ -81,14 +81,14 @@ async def send_ping(ws):
 async def connect_ws():
     uri = "wss://ws.bitget.com/mix/v1/stream"
     async with websockets.connect(uri) as ws:
-        sub = {
-            "op": "subscribe",
-            "args": [{
-                "instType": "UMCBL",
-                "channel": "candle1M",            # 대문자 M
-                "instId": "BTCUSDT_UMCBL"         # 완전한 심볼
-            }]
-        }
+sub = {
+    "op": "subscribe",
+    "args": [{
+        "channel": "mix/candle1m",
+        "instId": "BTCUSDT_UMCBL"
+    }]
+}
+
         await ws.send(json.dumps(sub))
         print("✅ WebSocket 연결됨. 실시간 1분봉 수신 중...\n")
 
