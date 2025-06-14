@@ -6,9 +6,8 @@ import numpy as np
 from datetime import datetime
 
 # ========= 설정 =========
-symbol = "BTCUSDT"  # Bitget 기준 instId
-channel = "candle1m"  # 1분봉 채널
-inst_type = "UMCBL"  # USDⓈ-M 선물
+symbol = "BTCUSDT_UMCBL"
+channel = "mix/candle1m"
 MAX_CANDLES = 200
 candles = []
 
@@ -19,60 +18,21 @@ def calculate_indicators(df):
     md = tp.rolling(14).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True)
     cci = (tp - ma) / (0.015 * md)
     ema10 = df["close"].ewm(span=10).mean()
-
-    delta_high = df["high"].diff()
-    delta_low = df["low"].diff()
-    plus_dm = np.where((delta_high > delta_low) & (delta_high > 0), delta_high, 0)
-    minus_dm = np.where((delta_low > delta_high) & (delta_low > 0), delta_low, 0)
-    tr = pd.concat([
-        df["high"] - df["low"],
-        abs(df["high"] - df["close"].shift(1)),
-        abs(df["low"] - df["close"].shift(1))
-    ], axis=1).max(axis=1)
-    atr = tr.rolling(5).mean()
-    plus_di = 100 * pd.Series(plus_dm).rolling(5).mean() / atr
-    minus_di = 100 * pd.Series(minus_dm).rolling(5).mean() / atr
-    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-    adx = dx.rolling(5).mean()
-
+    # ADX 계산...
+    # ...
     df["CCI"] = cci
     df["EMA10"] = ema10
     df["ADX"] = adx
     return df
 
-# ========= 수신 데이터 처리 =========
 def handle_candle_message(msg):
-    global candles
     d = msg.get("data")
     ts = msg.get("ts")
-
     if not d or not ts:
         print(f"⚠️ 잘못된 메시지 수신: {msg}")
         return
+    # ... 캔들 수집 코드 ...
 
-    candles.append({
-        "timestamp": ts,
-        "open": float(d["o"]),
-        "high": float(d["h"]),
-        "low": float(d["l"]),
-        "close": float(d["c"]),
-        "volume": float(d["v"]),
-    })
-
-    if len(candles) > MAX_CANDLES:
-        candles.pop(0)
-
-    if len(candles) >= 20:
-        df = pd.DataFrame(candles)
-        df = calculate_indicators(df)
-        latest = df.iloc[-1]
-        time_str = datetime.fromtimestamp(latest["timestamp"] / 1000).strftime('%Y-%m-%d %H:%M:%S')
-
-        print(f"🕒 {time_str} | 💰 Close: {latest['close']:.2f} | CCI: {latest['CCI']:.2f} | EMA10: {latest['EMA10']:.2f} | ADX: {latest['ADX']:.2f}")
-    else:
-        print(f"📉 수신 중... ({len(candles)}개 캔들 수집됨)")
-
-# ========= Ping (유지 연결) =========
 async def send_ping(ws):
     while True:
         try:
@@ -82,14 +42,12 @@ async def send_ping(ws):
             break
         await asyncio.sleep(20)
 
-# ========= WebSocket 연결 =========
 async def connect_ws():
     uri = "wss://ws.bitget.com/mix/v1/stream"
     async with websockets.connect(uri) as ws:
         sub = {
             "op": "subscribe",
             "args": [{
-                "instType": inst_type,
                 "channel": channel,
                 "instId": symbol
             }]
@@ -113,6 +71,6 @@ async def connect_ws():
                 print(f"❌ WebSocket 에러: {e}")
                 break
 
-# ========= 실행 =========
 if __name__ == "__main__":
     asyncio.run(connect_ws())
+
