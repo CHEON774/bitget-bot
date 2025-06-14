@@ -17,29 +17,38 @@ def calc(df):
 
 def on_msg(msg):
     d, ts = msg["data"], msg["ts"]
-    candles.append({"timestamp": ts, "open":float(d["o"]), "high":float(d["h"]), "low":float(d["l"]), "close":float(d["c"]), "volume":float(d["v"])})
+    candles.append({
+        "timestamp": ts,
+        "open": float(d["o"]), "high": float(d["h"]),
+        "low": float(d["l"]), "close": float(d["c"]), "volume": float(d["v"])
+    })
     if len(candles) > MAX: candles.pop(0)
     if len(candles) >= 20:
         df = calc(pd.DataFrame(candles)); lt = df.iloc[-1]
         t = datetime.fromtimestamp(lt.timestamp/1000).strftime("%H:%M")
-        print(f"🕒 {t} | 💰 {lt.close:.2f} | CCI {lt.CCI:.2f} | EMA10 {lt.EMA10:.2f} | ADX {lt.ADX:.2f}")
+        print(f"🕒 {t} | Close: {lt.close:.2f} | CCI: {lt.CCI:.2f} | EMA10: {lt.EMA10:.2f} | ADX: {lt.ADX:.2f}")
     else:
-        print(f"📉 collecting {len(candles)} candle(s)")
+        print(f"📉 collecting {len(candles)}")
 
 async def ws_loop():
-    uri = "wss://ws.bitget.com/mix/v1/stream"
+    uri = "wss://ws.bitget.com/v2/ws/public"
     async with websockets.connect(uri) as ws:
-        await ws.send(json.dumps({
-            "op":"subscribe",
-            "args":[{"instType": inst_type, "channel": channel, "instId": symbol}]
-        }))
-        print("✅ WebSocket connected, subscribing candle1m...")
+        subscribe_msg = {
+            "op": "subscribe",
+            "args": [{
+                "instType": inst_type,
+                "channel": channel,
+                "instId": symbol
+            }]
+        }
+        await ws.send(json.dumps(subscribe_msg))
+        print("✅ Connected to V2 WS, subscribing candle1m...")
         while True:
             msg = json.loads(await ws.recv())
             print("📩", msg)
-            if "data" in msg:
+            if msg.get("data"):
                 on_msg(msg)
 
-if __name__=="__main__":
+if __name__ == "__main__":
     asyncio.run(ws_loop())
 
