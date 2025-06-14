@@ -5,14 +5,14 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
-# ========== 설정 ==========
+# ========= 설정 =========
 symbol = "BTCUSDT_UMCBL"
-channel = "candle1M"  # 반드시 M 대문자!
-inst_type = "UMCBL"
+channel = "candle1M"  # ✅ 대문자 M 필수
+inst_type = "mix"      # ✅ 정확한 instType
 MAX_CANDLES = 200
 candles = []
 
-# ========== 지표 계산 ==========
+# ========= 지표 계산 =========
 def calculate_indicators(df):
     tp = (df["high"] + df["low"] + df["close"]) / 3
     ma = tp.rolling(14).mean()
@@ -40,7 +40,7 @@ def calculate_indicators(df):
     df["ADX"] = adx
     return df
 
-# ========== 수신 데이터 처리 ==========
+# ========= 수신 데이터 처리 =========
 def handle_candle_message(msg):
     global candles
     d = msg["data"]
@@ -63,12 +63,11 @@ def handle_candle_message(msg):
         df = calculate_indicators(df)
         latest = df.iloc[-1]
         time_str = datetime.fromtimestamp(latest["timestamp"] / 1000).strftime('%Y-%m-%d %H:%M:%S')
-
         print(f"\n🕒 {time_str} | 💰 Close: {latest['close']:.2f} | CCI: {latest['CCI']:.2f} | EMA10: {latest['EMA10']:.2f} | ADX: {latest['ADX']:.2f}")
     else:
         print(f"📉 수신 중... ({len(candles)}개 캔들 수집됨)")
 
-# ========== Ping 유지 ==========
+# ========= Ping (연결 유지) =========
 async def send_ping(ws):
     while True:
         try:
@@ -78,21 +77,20 @@ async def send_ping(ws):
             break
         await asyncio.sleep(20)
 
-# ========== WebSocket 연결 ==========
+# ========= WebSocket 연결 =========
 async def connect_ws():
     uri = "wss://ws.bitget.com/mix/v1/stream"
     async with websockets.connect(uri) as ws:
-        print("\n✅ WebSocket connected, subscribing candle1m...")
-
         sub = {
             "op": "subscribe",
             "args": [{
-                "instType": inst_type,
-                "channel": channel,
-                "instId": symbol
+                "instType": inst_type,  # ✅ "mix"
+                "channel": channel,     # ✅ "candle1M"
+                "instId": symbol        # ✅ "BTCUSDT_UMCBL"
             }]
         }
         await ws.send(json.dumps(sub))
+        print("✅ WebSocket connected, subscribing candle1M...")
 
         asyncio.create_task(send_ping(ws))
 
@@ -100,18 +98,13 @@ async def connect_ws():
             try:
                 msg = await ws.recv()
                 data = json.loads(msg)
-
-                if 'event' in data and data['event'] == 'error':
-                    print("📩 수신 원문:", data)
-                    continue
-
+                print(f"\n📩 수신 원문: {data}")
                 if "data" in data:
                     handle_candle_message(data)
             except Exception as e:
                 print(f"❌ WebSocket 에러: {e}")
                 break
 
-# ========== 실행 ==========
+# ========= 실행 =========
 if __name__ == "__main__":
     asyncio.run(connect_ws())
-
