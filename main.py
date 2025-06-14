@@ -67,7 +67,7 @@ def handle_candle_message(msg):
     else:
         print(f"📉 수신 중... ({len(candles)}개 캔들 수집됨)")
 
-# ========= Ping (유지 연결) =========
+# ========= Ping 유지 =========
 async def send_ping(ws):
     while True:
         try:
@@ -92,7 +92,7 @@ async def connect_ws():
         await ws.send(json.dumps(sub))
         print("✅ WebSocket 연결됨. 실시간 1분봉 수신 중...\n")
 
-        # Ping task 시작
+        # Ping 전송 시작
         asyncio.create_task(send_ping(ws))
 
         while True:
@@ -105,6 +105,17 @@ async def connect_ws():
                 print(f"❌ WebSocket 에러: {e}")
                 break
 
+# ========= 자동 재연결 루프 =========
+async def main_loop():
+    while True:
+        try:
+            await connect_ws()
+        except Exception as e:
+            print(f"❌ 연결 실패 또는 종료: {e}")
+            print("🔁 5초 후 재연결 시도...\n")
+            await asyncio.sleep(5)
+
 # ========= 실행 =========
 if __name__ == "__main__":
-    asyncio.run(connect_ws())
+    asyncio.run(main_loop())
+
