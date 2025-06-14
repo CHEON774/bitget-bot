@@ -84,7 +84,6 @@ async def connect_ws():
         sub = {
             "op": "subscribe",
             "args": [{
-                "instType": "UMCBL",
                 "channel": channel,
                 "instId": symbol
             }]
