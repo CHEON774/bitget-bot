@@ -43,8 +43,12 @@ def calculate_indicators(df):
 # ========= 수신 데이터 처리 =========
 def handle_candle_message(msg):
     global candles
-    d = msg["data"]
-    ts = int(msg["ts"])
+    d = msg.get("data")
+    ts = msg.get("ts")
+
+    if not d or not ts:
+        print(f"⚠️ 잘못된 메시지 수신: {msg}")
+        return
 
     candles.append({
         "timestamp": ts,
@@ -103,6 +107,8 @@ async def connect_ws():
                     handle_candle_message(data)
                 elif "event" in data and data["event"] == "error":
                     print(f"📩 수신 원문: {json.dumps(data)}")
+                else:
+                    print(f"⚠️ 알 수 없는 응답: {data}")
             except Exception as e:
                 print(f"❌ WebSocket 에러: {e}")
                 break
@@ -110,4 +116,3 @@ async def connect_ws():
 # ========= 실행 =========
 if __name__ == "__main__":
     asyncio.run(connect_ws())
-
