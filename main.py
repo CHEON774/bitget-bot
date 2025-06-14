@@ -2,10 +2,9 @@ import asyncio, json, pandas as pd, numpy as np
 from datetime import datetime
 import websockets
 
-symbol = "BTCUSDT"
+symbol = "BTCUSDT_UMCBL"
 channel = "candle1m"
-inst_type = "USDT-FUTURES"
-MAX = 200
+inst_type = "mc"
 candles = []
 
 def calc(df):
@@ -16,30 +15,36 @@ def calc(df):
     return df
 
 def on_msg(msg):
-    d = msg["data"][0]  # ✅ 수정: 리스트에서 첫 번째 항목 가져옴
+    data = msg.get("data")
+    if not data or not isinstance(data, list):
+        print("❌ 잘못된 데이터 형식:", msg)
+        return
+
+    d = data[0]  # ✅ 리스트 안의 첫 dict
     ts = int(msg["ts"])
     candles.append({
         "timestamp": ts,
-        "open": float(d["o"]),
-        "high": float(d["h"]),
-        "low": float(d["l"]),
-        "close": float(d["c"]),
-        "volume": float(d["v"])
+        "open": float(d[1]),
+        "high": float(d[3]),
+        "low": float(d[4]),
+        "close": float(d[2]),
+        "volume": float(d[5])
     })
-    if len(candles) > MAX:
+    if len(candles) > 200:
         candles.pop(0)
+
     if len(candles) >= 20:
         df = calc(pd.DataFrame(candles))
         lt = df.iloc[-1]
         t = datetime.fromtimestamp(lt.timestamp / 1000).strftime("%H:%M")
         print(f"🕒 {t} | Close: {lt.close:.2f} | CCI: {lt.CCI:.2f} | EMA10: {lt.EMA10:.2f} | ADX: {lt.ADX:.2f}")
     else:
-        print(f"📉 collecting... ({len(candles)})")
+        print(f"📉 수신 중... ({len(candles)}개 수집됨)")
 
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
     async with websockets.connect(uri) as ws:
-        msg = {
+        sub_msg = {
             "op": "subscribe",
             "args": [{
                 "instType": inst_type,
@@ -47,14 +52,15 @@ async def ws_loop():
                 "instId": symbol
             }]
         }
-        await ws.send(json.dumps(msg))
+        await ws.send(json.dumps(sub_msg))
         print("✅ WebSocket connected, subscribing candle1m...")
+
         while True:
             raw = await ws.recv()
-            data = json.loads(raw)
-            print("📩", data)
-            if "data" in data:
-                on_msg(data)
+            msg = json.loads(raw)
+            print("📩 수신 원문:", msg)
+            if "data" in msg:
+                on_msg(msg)
 
 if __name__ == "__main__":
     asyncio.run(ws_loop())
