@@ -1,111 +1,55 @@
-import asyncio
-import websockets
-import json
-import pandas as pd
-import numpy as np
+import asyncio, json, pandas as pd, numpy as np
 from datetime import datetime
+import websockets
 
-# ====== 설정 ======
 symbol = "BTCUSDT"
 channel = "candle1m"
-inst_type = "umcbl"  # USDT-M 선물
+inst_type = "USDT-FUTURES"  # 반드시 이 값 사용
 MAX_CANDLES = 200
 candles = []
 
-# ====== 지표 계산 ======
-def calculate_indicators(df):
-    tp = (df["high"] + df["low"] + df["close"]) / 3
-    ma = tp.rolling(14).mean()
-    md = tp.rolling(14).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True)
-    cci = (tp - ma) / (0.015 * md)
-    ema10 = df["close"].ewm(span=10).mean()
-
-    delta_high = df["high"].diff()
-    delta_low = df["low"].diff()
-    plus_dm = np.where((delta_high > delta_low) & (delta_high > 0), delta_high, 0)
-    minus_dm = np.where((delta_low > delta_high) & (delta_low > 0), delta_low, 0)
-    tr = pd.concat([
-        df["high"] - df["low"],
-        abs(df["high"] - df["close"].shift(1)),
-        abs(df["low"] - df["close"].shift(1))
-    ], axis=1).max(axis=1)
-    atr = tr.rolling(5).mean()
-    plus_di = 100 * pd.Series(plus_dm).rolling(5).mean() / atr
-    minus_di = 100 * pd.Series(minus_dm).rolling(5).mean() / atr
-    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-    adx = dx.rolling(5).mean()
-
-    df["CCI"] = cci
-    df["EMA10"] = ema10
-    df["ADX"] = adx
+def calc(df):
+    tp = (df.high + df.low + df.close) / 3
+    df["CCI"] = (tp - tp.rolling(14).mean()) / (0.015 * tp.rolling(14).apply(lambda x: np.mean(abs(x - x.mean()))))
+    df["EMA10"] = df.close.ewm(span=10).mean()
+    df["ADX"] = 100 * abs(df.high.diff() - df.low.diff()).rolling(5).mean() / df.close.diff().rolling(5).mean()
     return df
 
-# ====== 캔들 메시지 처리 ======
-def handle_candle_message(msg):
-    global candles
-    d = msg["data"]
-    ts = int(msg["ts"])
-
+def on_msg(msg):
+    d, ts = msg.get("data"), msg.get("ts", 0)
+    if not d:
+        print("⚠️ no data", msg); return
     candles.append({
         "timestamp": ts,
-        "open": float(d["o"]),
-        "high": float(d["h"]),
-        "low": float(d["l"]),
-        "close": float(d["c"]),
-        "volume": float(d["v"])
+        "open": float(d["o"]), "high": float(d["h"]),
+        "low": float(d["l"]), "close": float(d["c"]), "volume": float(d["v"])
     })
-
     if len(candles) > MAX_CANDLES:
         candles.pop(0)
-
     if len(candles) >= 20:
-        df = pd.DataFrame(candles)
-        df = calculate_indicators(df)
-        latest = df.iloc[-1]
-        time_str = datetime.fromtimestamp(latest["timestamp"] / 1000).strftime('%Y-%m-%d %H:%M:%S')
-
-        print(f"🕒 {time_str} | 💰 Close: {latest['close']:.2f} | CCI: {latest['CCI']:.2f} | EMA10: {latest['EMA10']:.2f} | ADX: {latest['ADX']:.2f}")
+        df = calc(pd.DataFrame(candles)); lt = df.iloc[-1]
+        t = datetime.fromtimestamp(lt.timestamp / 1000).strftime("%H:%M")
+        print(f"🕒 {t} | 💰 {lt.close:.2f} | CCI {lt.CCI:.2f} | EMA10 {lt.EMA10:.2f} | ADX {lt.ADX:.2f}")
     else:
-        print(f"📉 수신 중... ({len(candles)}개 캔들 수집됨)")
+        print(f"📉 collecting {len(candles)} candle(s)")
 
-# ====== Ping 유지 ======
-async def send_ping(ws):
-    while True:
-        try:
-            await ws.ping()
-        except Exception as e:
-            print(f"❌ Ping 실패: {e}")
-            break
-        await asyncio.sleep(20)
-
-# ====== WebSocket 연결 ======
-async def connect_ws():
-    uri = "wss://ws.bitget.com/mix/v1/stream"
-    async with websockets.connect(uri) as ws:
-        sub = {
+async def ws_loop():
+    async with websockets.connect("wss://ws.bitget.com/mix/v1/stream") as ws:
+        await ws.send(json.dumps({
             "op": "subscribe",
             "args": [{
                 "instType": inst_type,
                 "channel": channel,
                 "instId": symbol
             }]
-        }
-        await ws.send(json.dumps(sub))
-        print("✅ WebSocket connected, subscribing candle1m...\n")
-
-        asyncio.create_task(send_ping(ws))
-
+        }))
+        print("✅ WebSocket connected, subscribing candle1m...")
         while True:
-            try:
-                msg = await ws.recv()
-                data = json.loads(msg)
-                print(f"\n📩 수신 원문: {data}")
-                if "data" in data:
-                    handle_candle_message(data)
-            except Exception as e:
-                print(f"❌ WebSocket 에러: {e}")
-                break
+            msg = json.loads(await ws.recv())
+            print("📩", msg)
+            if "data" in msg:
+                on_msg(msg)
 
-# ====== 실행 ======
 if __name__ == "__main__":
-    asyncio.run(connect_ws())
+    asyncio.run(ws_loop())
+
