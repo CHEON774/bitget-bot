@@ -40,13 +40,14 @@ async def ws_loop():
     uri = "wss://ws.bitget.com/mix/v1/stream"
     async with websockets.connect(uri) as ws:
         await ws.send(json.dumps({
-            "op": "subscribe",
-            "args": [{
-                "instType": inst_type,
-                "channel": channel,
-                "instId": symbol
-            }]
-        }))
+  "op": "subscribe",
+  "args": [{
+    "instType": "USDT-FUTURES",
+    "channel": "candle1m",
+    "instId": "BTCUSDT"
+  }]
+}
+))
         print("✅ WebSocket connected, subscribing candle1m...")
         while True:
             try:
