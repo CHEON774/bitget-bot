@@ -6,8 +6,8 @@ import numpy as np
 from datetime import datetime
 
 # ========= 설정 =========
-symbol = "BTCUSDT"
-channel = "candle1m"
+symbol = "BTCUSDT_UMCBL"
+channel = "candle1M"   # 선물 채널은 대문자 M!
 MAX_CANDLES = 200
 candles = []
 
@@ -84,8 +84,9 @@ async def connect_ws():
         sub = {
             "op": "subscribe",
             "args": [{
-                "channel": channel,
-                "instId": symbol
+                "instType": "UMCBL",
+                "channel": "candle1M",            # 대문자 M
+                "instId": "BTCUSDT_UMCBL"         # 완전한 심볼
             }]
         }
         await ws.send(json.dumps(sub))
