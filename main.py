@@ -7,7 +7,7 @@ from datetime import datetime
 
 # ========= 설정 =========
 symbol = "BTCUSDT_UMCBL"
-channel = "candle1M"   # 선물 채널은 대문자 M!
+channel = "mix/candle1m"   # 선물 1분봉 채널
 MAX_CANDLES = 200
 candles = []
 
@@ -67,7 +67,7 @@ def handle_candle_message(msg):
     else:
         print(f"📉 수신 중... ({len(candles)}개 캔들 수집됨)")
 
-# ========= Ping 유지 =========
+# ========= Ping (유지 연결) =========
 async def send_ping(ws):
     while True:
         try:
@@ -81,14 +81,13 @@ async def send_ping(ws):
 async def connect_ws():
     uri = "wss://ws.bitget.com/mix/v1/stream"
     async with websockets.connect(uri) as ws:
-sub = {
-    "op": "subscribe",
-    "args": [{
-        "channel": "mix/candle1m",
-        "instId": "BTCUSDT_UMCBL"
-    }]
-}
-
+        sub = {
+            "op": "subscribe",
+            "args": [{
+                "channel": channel,
+                "instId": symbol
+            }]
+        }
         await ws.send(json.dumps(sub))
         print("✅ WebSocket 연결됨. 실시간 1분봉 수신 중...\n")
 
@@ -97,25 +96,16 @@ sub = {
         while True:
             try:
                 msg = await ws.recv()
-                print("📩 수신 원문:", msg)  # 디버깅용 로그
                 data = json.loads(msg)
                 if "data" in data:
                     handle_candle_message(data)
+                elif "event" in data and data["event"] == "error":
+                    print(f"📩 수신 원문: {json.dumps(data)}")
             except Exception as e:
                 print(f"❌ WebSocket 에러: {e}")
                 break
 
-# ========= 자동 재연결 루프 =========
-async def main_loop():
-    while True:
-        try:
-            await connect_ws()
-        except Exception as e:
-            print(f"❌ 연결 실패 또는 종료: {e}")
-            print("🔁 5초 후 재연결 시도...\n")
-            await asyncio.sleep(5)
-
 # ========= 실행 =========
 if __name__ == "__main__":
-    asyncio.run(main_loop())
+    asyncio.run(connect_ws())
 
