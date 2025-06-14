@@ -6,8 +6,9 @@ import numpy as np
 from datetime import datetime
 
 # ========= 설정 =========
-symbol = "BTCUSDT_UMCBL"
-channel = "candle1m"
+symbol = "BTCUSDT"  # Bitget 기준 instId
+channel = "candle1m"  # 1분봉 채널
+inst_type = "UMCBL"  # USDⓈ-M 선물
 MAX_CANDLES = 200
 candles = []
 
@@ -84,6 +85,7 @@ async def connect_ws():
         sub = {
             "op": "subscribe",
             "args": [{
+                "instType": inst_type,
                 "channel": channel,
                 "instId": symbol
             }]
