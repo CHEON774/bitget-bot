@@ -7,7 +7,7 @@ import websockets
 
 symbol = "BTCUSDT_UMCBL"
 channel = "candle1m"
-inst_type = "UMCBL"
+inst_type = "USDT-FUTURES" 
 MAX = 200
 candles = []
 
@@ -42,17 +42,14 @@ def on_msg(msg):
     else:
         print(f"📉 collecting {len(candles)} candle(s)")
 
-async def ws_loop():
-    uri = "wss://ws.bitget.com/mix/v1/stream"
-    async with websockets.connect(uri) as ws:
-        await ws.send(json.dumps({
-            "op": "subscribe",
-            "args": [{
-                "instType": inst_type,
-                "channel": channel,
-                "instId": symbol
-            }]
-        }))
+await ws.send(json.dumps({
+    "op": "subscribe",
+    "args": [{
+        "instType": inst_type,
+        "channel": channel,
+        "instId": symbol
+    }]
+}))
         print("✅ WebSocket connected, subscribing candle1m...")
         while True:
             try:
