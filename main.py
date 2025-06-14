@@ -7,7 +7,7 @@ from datetime import datetime
 
 # ========= 설정 =========
 symbol = "BTCUSDT_UMCBL"
-channel = "candle1M"   # 1분봉
+channel = "candle1m"   # 소문자 m!
 MAX_CANDLES = 200
 candles = []
 
@@ -92,12 +92,12 @@ async def connect_ws():
         await ws.send(json.dumps(sub))
         print("✅ WebSocket 연결됨. 실시간 1분봉 수신 중...\n")
 
-        # Ping 전송 시작
         asyncio.create_task(send_ping(ws))
 
         while True:
             try:
                 msg = await ws.recv()
+                print("📩 수신 원문:", msg)  # 디버깅용 로그
                 data = json.loads(msg)
                 if "data" in data:
                     handle_candle_message(data)
