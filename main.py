@@ -5,10 +5,10 @@ import numpy as np
 # === 사용자 설정 ===
 SYMBOL = "BTCUSDT"
 INST_TYPE = "USDT-FUTURES"
-CHANNEL = "candle1m"
+CHANNEL = "candle1m"  # ✅ 1분봉
 MAX_CANDLES = 150
-BOT_TOKEN = "7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU"
-CHAT_ID = "1797494660"
+BOT_TOKEN = "여기에_봇토큰_입력"
+CHAT_ID = "여기에_chat_id_입력"
 # ==================
 
 candles = []
@@ -78,39 +78,40 @@ def on_msg(msg):
         adx = calculate_adx(candles[:-1], 5)
 
         if cci is not None and adx is not None:
-            print(f"📊 CCI(14): {cci:.2f} | ADX(5): {adx:.2f}")
-
-            if adx > 25:
-                if cci > 100:
-                    msg = f"📈 [LONG 진입] CCI={cci:.2f}, ADX={adx:.2f} | {time_str}"
-                    print(msg)
-                    send_telegram(msg)
-                elif cci < -100:
-                    msg = f"📉 [SHORT 진입] CCI={cci:.2f}, ADX={adx:.2f} | {time_str}"
-                    print(msg)
-                    send_telegram(msg)
+            msg = f"📊 CCI(14): {cci:.2f} | ADX(5): {adx:.2f}"
+            print(msg)
+            send_telegram(msg)
         else:
             print("⏳ 지표 계산 중...")
 
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
-    async with websockets.connect(uri, ping_interval=20) as ws:
-        await ws.send(json.dumps({
-            "op": "subscribe",
-            "args": [{
-                "instType": INST_TYPE,
-                "channel": CHANNEL,
-                "instId": SYMBOL
-            }]
-        }))
-        print("✅ WS 연결됨 / candle15m 구독 시도")
-        while True:
-            msg = json.loads(await ws.recv())
-            if msg.get("event") == "error":
-                print(f"❌ 에러 응답: {msg}")
-                return
-            if msg.get("action") in ["snapshot", "update"]:
-                on_msg(msg)
+
+    while True:
+        try:
+            async with websockets.connect(uri, ping_interval=20, ping_timeout=30) as ws:
+                await ws.send(json.dumps({
+                    "op": "subscribe",
+                    "args": [{
+                        "instType": INST_TYPE,
+                        "channel": CHANNEL,
+                        "instId": SYMBOL
+                    }]
+                }))
+                print(f"✅ WS 연결됨 / {CHANNEL} 구독 시도")
+
+                while True:
+                    msg = json.loads(await ws.recv())
+                    if msg.get("event") == "error":
+                        print(f"❌ 에러 응답: {msg}")
+                        break
+                    if msg.get("action") in ["snapshot", "update"]:
+                        on_msg(msg)
+
+        except Exception as e:
+            print(f"⚠️ WebSocket 연결 오류: {e}")
+            print("🔁 5초 후 재연결 시도 중...")
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     asyncio.run(ws_loop())
