@@ -5,7 +5,7 @@ import numpy as np
 # === 사용자 설정 ===
 SYMBOL = "BTCUSDT"
 INST_TYPE = "USDT-FUTURES"
-CHANNEL = "candle15m"
+CHANNEL = "candle1m"
 MAX_CANDLES = 150
 BOT_TOKEN = "7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU"
 CHAT_ID = "1797494660"
