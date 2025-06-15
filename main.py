@@ -2,16 +2,17 @@ import asyncio, json, websockets, requests
 from datetime import datetime
 import numpy as np
 
+# === 사용자 설정 ===
 SYMBOL = "BTCUSDT"
-INST_TYPE = "USDT-FUTURES"
-CHANNEL = "candle1m"
+INST_TYPE = "UMCBL"
+CHANNEL = "candle1m"  # ✅ 유지
 MAX_CANDLES = 150
+BOT_TOKEN = "여기에_봇토큰_입력"
+CHAT_ID = "여기에_chat_id_입력"
+# ==================
+
 candles = []
-
-BOT_TOKEN = "7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU"
-CHAT_ID = "1797494660'"
-
-last_completed_ts = None  # 지표 출력 중복 방지용
+last_completed_ts = None
 
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -44,16 +45,16 @@ def calculate_adx(candles, period=5):
     minus_di = 100 * (np.mean(minus_dm[-period:]) / atr) if atr != 0 else 0
     return abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) != 0 else 0
 
-# ✅ 이 부분이 연동된 WebSocket 기준 코드 (변경 ❌)
+# ✅ 연동 기준 구조 변경 없음
 def on_msg(msg):
     d = msg["data"][0]
     ts = int(d[0])
     print(f"🕒 {datetime.fromtimestamp(ts/1000):%Y-%m-%d %H:%M:%S} | O:{d[1]} H:{d[2]} L:{d[3]} C:{d[4]} V:{d[5]}")
 
-    # ✅ 아래부터 기능 추가만 허용
+    # ✅ 아래부터 기능만 추가
     global last_completed_ts
     candle = [ts, d[1], d[2], d[3], d[4], d[5]]
-    
+
     if candles and candles[-1][0] == ts:
         candles[-1] = candle
     else:
@@ -79,21 +80,26 @@ def on_msg(msg):
             print(log)
             send_telegram(log)
 
-# ✅ 절대 변경 금지: WebSocket 연결 구조
+# ✅ WebSocket 연결 및 자동 채널 변환
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
     while True:
         try:
             async with websockets.connect(uri, ping_interval=20, ping_timeout=30) as ws:
+                # 자동 분리: "candle1m" → channel="candle", timeFrame="1m"
+                channel_name, timeframe = CHANNEL[:6], CHANNEL[6:]
+
                 await ws.send(json.dumps({
                     "op": "subscribe",
                     "args": [{
-                        "instType": "UMCBL",  # ✅ Bitget 요구대로 소문자
-                        "channel": "candle1m",
-                        "instId": "BTCUSDT"
+                        "instType": INST_TYPE,
+                        "channel": channel_name,
+                        "instId": SYMBOL,
+                        "timeFrame": timeframe
                     }]
                 }))
                 print(f"✅ WS 연결됨 / {CHANNEL} 구독 시도")
+
                 while True:
                     raw = await ws.recv()
                     msg = json.loads(raw)
