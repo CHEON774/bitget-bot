@@ -88,7 +88,7 @@ async def ws_loop():
                 await ws.send(json.dumps({
                     "op": "subscribe",
                     "args": [{
-                        "instType": "usdt-futures",   # ✅ Bitget 요구대로 소문자
+                        "instType": "UMCBL",  # ✅ Bitget 요구대로 소문자
                         "channel": "candle1m",
                         "instId": "BTCUSDT"
                     }]
