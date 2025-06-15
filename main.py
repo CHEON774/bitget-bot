@@ -4,12 +4,11 @@ import numpy as np
 
 SYMBOL = "BTCUSDT"
 INST_TYPE = "UMCBL"
-CHANNEL = "candle1m"  # 유지 (자동 변환)
 MAX_CANDLES = 150
 candles = []
 
-BOT_TOKEN = "7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU"
-CHAT_ID = "1797494660"
+BOT_TOKEN = "여기에_봇토큰_입력"
+CHAT_ID = "여기에_chat_id_입력"
 
 last_completed_ts = None
 
@@ -81,15 +80,17 @@ async def ws_loop():
     while True:
         try:
             async with websockets.connect(uri, ping_interval=20, ping_timeout=30) as ws:
-                await ws.send(json.dumps({
+                payload = {
                     "op": "subscribe",
                     "args": [{
                         "instType": INST_TYPE,
                         "channel": "candle",
                         "instId": SYMBOL,
-                        "timeFrame": "1m"  # ✅ 반드시 포함해야 작동함
+                        "timeFrame": "1m"
                     }]
-                }))
+                }
+                print("📤 전송 메시지:", json.dumps(payload))
+                await ws.send(json.dumps(payload))
                 print("✅ WS 연결됨 / candle1m 구독 시도")
                 while True:
                     msg = json.loads(await ws.recv())
@@ -102,10 +103,6 @@ async def ws_loop():
             print(f"⚠️ WebSocket 연결 오류: {e}")
             print("🔁 5초 후 재연결 시도 중...")
             await asyncio.sleep(5)
-
-if __name__ == "__main__":
-    asyncio.run(ws_loop())
-
 
 if __name__ == "__main__":
     asyncio.run(ws_loop())
