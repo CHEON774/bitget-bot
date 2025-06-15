@@ -7,8 +7,8 @@ SYMBOL = "BTCUSDT"
 INST_TYPE = "UMCBL"
 CHANNEL = "candle1m"  # ✅ 유지 (자동 분리됨)
 MAX_CANDLES = 150
-BOT_TOKEN = "여기에_봇토큰_입력"
-CHAT_ID = "여기에_chat_id_입력"
+BOT_TOKEN = "7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU"
+CHAT_ID = "1797494660"
 # ==================
 
 candles = []
