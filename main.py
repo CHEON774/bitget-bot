@@ -5,7 +5,7 @@ import numpy as np
 # === 사용자 설정 ===
 SYMBOL = "BTCUSDT"
 INST_TYPE = "UMCBL"
-CHANNEL = "candle1m"  # ✅ 유지
+CHANNEL = "candle1m"  # ✅ 유지 (자동 분리됨)
 MAX_CANDLES = 150
 BOT_TOKEN = "여기에_봇토큰_입력"
 CHAT_ID = "여기에_chat_id_입력"
@@ -45,7 +45,7 @@ def calculate_adx(candles, period=5):
     minus_di = 100 * (np.mean(minus_dm[-period:]) / atr) if atr != 0 else 0
     return abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) != 0 else 0
 
-# ✅ 연동 기준 구조 변경 없음
+# ✅ 연동 기준 구조 유지
 def on_msg(msg):
     d = msg["data"][0]
     ts = int(d[0])
@@ -80,14 +80,15 @@ def on_msg(msg):
             print(log)
             send_telegram(log)
 
-# ✅ WebSocket 연결 및 자동 채널 변환
+# ✅ WebSocket 연결 구조 유지 + 채널 자동 변환
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
     while True:
         try:
             async with websockets.connect(uri, ping_interval=20, ping_timeout=30) as ws:
-                # 자동 분리: "candle1m" → channel="candle", timeFrame="1m"
-                channel_name, timeframe = CHANNEL[:6], CHANNEL[6:]
+                # 자동 분리: candle1m → candle + 1m
+                channel_name = "candle"
+                time_frame = CHANNEL.replace("candle", "")
 
                 await ws.send(json.dumps({
                     "op": "subscribe",
@@ -95,7 +96,7 @@ async def ws_loop():
                         "instType": INST_TYPE,
                         "channel": channel_name,
                         "instId": SYMBOL,
-                        "timeFrame": timeframe
+                        "timeFrame": time_frame  # ✅ 반드시 포함!
                     }]
                 }))
                 print(f"✅ WS 연결됨 / {CHANNEL} 구독 시도")
@@ -115,4 +116,3 @@ async def ws_loop():
 
 if __name__ == "__main__":
     asyncio.run(ws_loop())
-
