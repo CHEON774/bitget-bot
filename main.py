@@ -4,9 +4,10 @@ import numpy as np
 
 SYMBOL = "BTCUSDT"
 INST_TYPE = "USDT-FUTURES"
-CHANNEL = "candle1m"
+CHANNEL = "candle15m"
 MAX_CANDLES = 150
 candles = []
+last_completed_ts = None
 
 def calculate_cci(candles, period=14):
     if len(candles) < period:
@@ -38,21 +39,43 @@ def calculate_adx(candles, period=5):
     return dx
 
 def on_msg(msg):
+    global last_completed_ts
     d = msg["data"][0]
     ts = int(d[0])
-    candle = [ts, d[1], d[2], d[3], d[4], d[5]]
-    candles.append(candle)
-    if len(candles) > MAX_CANDLES:
-        candles.pop(0)
 
-    # 출력
-    time_str = f"{datetime.fromtimestamp(ts/1000):%Y-%m-%d %H:%M:%S}"
-    print(f"\n🕒 {time_str} | O:{d[1]} H:{d[2]} L:{d[3]} C:{d[4]} V:{d[5]}")
+    candle = [ts, d[1], d[2], d[3], d[4], d[5]]
+
+    if candles and candles[-1][0] == ts:
+        candles[-1] = candle
+    else:
+        candles.append(candle)
+        if len(candles) > MAX_CANDLES:
+            candles.pop(0)
 
     if len(candles) >= 20:
-        cci = calculate_cci(candles, 14)
-        adx = calculate_adx(candles, 5)
-        print(f"📊 CCI(14): {cci:.2f} | ADX(5): {adx:.2f}" if cci is not None and adx is not None else "⏳ 지표 계산 중...")
+        prev_candle = candles[-2]
+        prev_ts = prev_candle[0]
+        if last_completed_ts == prev_ts:
+            return
+
+        last_completed_ts = prev_ts
+        time_str = f"{datetime.fromtimestamp(prev_ts / 1000):%Y-%m-%d %H:%M:%S}"
+        print(f"\n🕒 {time_str} | O:{prev_candle[1]} H:{prev_candle[2]} L:{prev_candle[3]} C:{prev_candle[4]} V:{prev_candle[5]}")
+
+        cci = calculate_cci(candles[:-1], 14)
+        adx = calculate_adx(candles[:-1], 5)
+
+        if cci is not None and adx is not None:
+            print(f"📊 CCI(14): {cci:.2f} | ADX(5): {adx:.2f}")
+
+            # 진입 조건
+            if adx > 25:
+                if cci > 100:
+                    print("📈 롱 진입 신호 발생 (CCI>100 & ADX>25)")
+                elif cci < -100:
+                    print("📉 숏 진입 신호 발생 (CCI<-100 & ADX>25)")
+        else:
+            print("⏳ 지표 계산 중...")
 
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
@@ -65,7 +88,7 @@ async def ws_loop():
                 "instId": SYMBOL
             }]
         }))
-        print("✅ WS 연결됨 / candle1m 구독 시도")
+        print("✅ WS 연결됨 / candle15m 구독 시도")
         while True:
             msg = json.loads(await ws.recv())
             if msg.get("event") == "error":
@@ -76,3 +99,4 @@ async def ws_loop():
 
 if __name__ == "__main__":
     asyncio.run(ws_loop())
+
