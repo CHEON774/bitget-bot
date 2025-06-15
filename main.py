@@ -2,16 +2,15 @@ import asyncio, json, websockets, requests
 from datetime import datetime
 import numpy as np
 
-# === 사용자 설정 ===
 SYMBOL = "BTCUSDT"
 INST_TYPE = "UMCBL"
-CHANNEL = "candle1m"  # ✅ 유지 (자동 분리됨)
+CHANNEL = "candle1m"  # 유지 (자동 변환)
 MAX_CANDLES = 150
+candles = []
+
 BOT_TOKEN = "7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU"
 CHAT_ID = "1797494660"
-# ==================
 
-candles = []
 last_completed_ts = None
 
 def send_telegram(msg):
@@ -45,14 +44,11 @@ def calculate_adx(candles, period=5):
     minus_di = 100 * (np.mean(minus_dm[-period:]) / atr) if atr != 0 else 0
     return abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) != 0 else 0
 
-# ✅ 연동 기준 구조 유지
 def on_msg(msg):
+    global last_completed_ts
     d = msg["data"][0]
     ts = int(d[0])
-    print(f"🕒 {datetime.fromtimestamp(ts/1000):%Y-%m-%d %H:%M:%S} | O:{d[1]} H:{d[2]} L:{d[3]} C:{d[4]} V:{d[5]}")
-
-    # ✅ 아래부터 기능만 추가
-    global last_completed_ts
+    print(f"\n🕒 {datetime.fromtimestamp(ts/1000):%Y-%m-%d %H:%M:%S} | O:{d[1]} H:{d[2]} L:{d[3]} C:{d[4]} V:{d[5]}")
     candle = [ts, d[1], d[2], d[3], d[4], d[5]]
 
     if candles and candles[-1][0] == ts:
@@ -70,7 +66,7 @@ def on_msg(msg):
         last_completed_ts = prev_ts
 
         time_str = f"{datetime.fromtimestamp(prev_ts / 1000):%Y-%m-%d %H:%M:%S}"
-        print(f"\n✅ 완성된 캔들 ▶️ {time_str} | O:{prev_candle[1]} H:{prev_candle[2]} L:{prev_candle[3]} C:{prev_candle[4]}")
+        print(f"✅ 완성된 캔들 ▶️ {time_str} | O:{prev_candle[1]} H:{prev_candle[2]} L:{prev_candle[3]} C:{prev_candle[4]}")
 
         cci = calculate_cci(candles[:-1], 14)
         adx = calculate_adx(candles[:-1], 5)
@@ -80,30 +76,23 @@ def on_msg(msg):
             print(log)
             send_telegram(log)
 
-# ✅ WebSocket 연결 구조 유지 + 채널 자동 변환
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
     while True:
         try:
             async with websockets.connect(uri, ping_interval=20, ping_timeout=30) as ws:
-                # 자동 분리: candle1m → candle + 1m
-                channel_name = "candle"
-                time_frame = CHANNEL.replace("candle", "")
-
                 await ws.send(json.dumps({
                     "op": "subscribe",
                     "args": [{
                         "instType": INST_TYPE,
-                        "channel": channel_name,
+                        "channel": "candle",
                         "instId": SYMBOL,
-                        "timeFrame": time_frame  # ✅ 반드시 포함!
+                        "timeFrame": "1m"  # ✅ 반드시 포함해야 작동함
                     }]
                 }))
-                print(f"✅ WS 연결됨 / {CHANNEL} 구독 시도")
-
+                print("✅ WS 연결됨 / candle1m 구독 시도")
                 while True:
-                    raw = await ws.recv()
-                    msg = json.loads(raw)
+                    msg = json.loads(await ws.recv())
                     if msg.get("event") == "error":
                         print(f"❌ 에러 응답: {msg}")
                         break
@@ -113,6 +102,10 @@ async def ws_loop():
             print(f"⚠️ WebSocket 연결 오류: {e}")
             print("🔁 5초 후 재연결 시도 중...")
             await asyncio.sleep(5)
+
+if __name__ == "__main__":
+    asyncio.run(ws_loop())
+
 
 if __name__ == "__main__":
     asyncio.run(ws_loop())
