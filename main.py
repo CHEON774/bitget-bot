@@ -7,8 +7,8 @@ SYMBOLS = ["BTCUSDT", "ETHUSDT"]
 INST_TYPE = "USDT-FUTURES"
 CHANNEL = "candle15m"  # ✅ 15분봉으로 변경
 MAX_CANDLES = 150
-BOT_TOKEN = "여기에_봇토큰_입력"
-CHAT_ID = "여기에_chat_id_입력"
+BOT_TOKEN = "7787612607:AAEHWXld8OqmK3OeGmo2nJdmx-Bg03h85UQ"
+CHAT_ID = "1797494660"
 
 # 심볼별 상태 저장
 candles_dict = {symbol: [] for symbol in SYMBOLS}
