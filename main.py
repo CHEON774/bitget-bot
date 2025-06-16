@@ -21,6 +21,10 @@ def get_headers(method, path, query_string="", body=""):
     timestamp = str(int(time.time() * 1000))
     request_path = path + (f"?{query_string}" if query_string else "")
     pre_hash = f"{timestamp}{method.upper()}{request_path}{body}"
+    
+    # ✅ 여기 추가: pre-hash 출력
+    print(f"📄 pre-hash 문자열: {pre_hash}")
+
     sign = base64.b64encode(
         hmac.new(API_SECRET.encode(), pre_hash.encode(), hashlib.sha256).digest()
     ).decode()
@@ -32,6 +36,7 @@ def get_headers(method, path, query_string="", body=""):
         "ACCESS-PASSPHRASE": API_PASSPHRASE,
         "Content-Type": "application/json"
     }
+
 
 # ✅ 잔고 조회 + 알림
 def check_balance():
