@@ -1,16 +1,15 @@
-
 import time, hmac, hashlib, json, requests
 
-# 🔐 Bitget API 정보 (직접 입력)
-API_KEY = 'bg_534f4dcd8acb22273de01247d163845e'
-API_SECRET = 'df5f0c3a596070ab8f940a8faeb2ebac2fdba90b8e1e096a05bb2e01ad13cf9d'
-API_PASSPHRASE = '1q2w3e4r'
+# ✅ Bitget API 인증정보 입력
+API_KEY = "bg_534f4dcd8acb22273de01247d163845e"
+API_SECRET = "df5f0c3a596070ab8f940a8faeb2ebac2fdba90b8e1e096a05bb2e01ad13cf9d"
+API_PASSPHRASE = "1q2w3e4r"
 
-# 📩 텔레그램 정보 (직접 입력)
-BOT_TOKEN = "7787612607:AAEHWXld8OqmK3OeGmo2nJdmx-Bg03h85UQ"
-CHAT_ID = "1797494660"
+# ✅ 텔레그램 정보
+TELEGRAM_TOKEN = "7787612607:AAEHWXld8OqmK3OeGmo2nJdmx-Bg03h85UQ"
+TELEGRAM_CHAT_ID = "1797494660"
 
-# 텔레그램 전송 함수
+# ✅ 텔레그램 메시지 전송 함수
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
@@ -18,11 +17,11 @@ def send_telegram(msg):
     except Exception as e:
         print("텔레그램 전송 실패:", e)
 
-# Bitget API 헤더 만들기
+# ✅ Bitget API 서명 + 헤더 생성
 def get_headers(method, path, body=''):
     timestamp = str(int(time.time() * 1000))
-    message = f"{timestamp}{method}{path}{body}"
-    sign = hmac.new(API_SECRET.encode(), message.encode(), hashlib.sha256).hexdigest()
+    pre_hash = f"{timestamp}{method}{path}{body}"
+    sign = hmac.new(API_SECRET.encode(), pre_hash.encode(), hashlib.sha256).hexdigest()
     return {
         "ACCESS-KEY": API_KEY,
         "ACCESS-SIGN": sign,
@@ -31,7 +30,7 @@ def get_headers(method, path, body=''):
         "Content-Type": "application/json"
     }
 
-# 잔고 조회 + 텔레그램 전송
+# ✅ 잔고 조회 및 텔레그램 알림
 def check_balance():
     symbol = "BTCUSDT"
     marginCoin = "USDT"
