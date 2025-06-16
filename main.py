@@ -2,20 +2,19 @@ import asyncio, json, websockets, requests
 from datetime import datetime
 import numpy as np
 
-# 설정값
-SYMBOL = "BTCUSDT"
-INST_TYPE = "USDT-FUTURES"  # ✅ 공식 문서 기준
+# 설정
+SYMBOLS = ["BTCUSDT", "ETHUSDT"]
+INST_TYPE = "USDT-FUTURES"
 CHANNEL = "candle1m"
 MAX_CANDLES = 150
-candles = []
-
-# 텔레그램 설정
 BOT_TOKEN = "여기에_봇토큰_입력"
 CHAT_ID = "여기에_chat_id_입력"
 
-last_completed_ts = None  # 마지막으로 처리한 캔들 시각
+# 심볼별 상태 저장
+candles_dict = {symbol: [] for symbol in SYMBOLS}
+last_completed_ts_dict = {symbol: None for symbol in SYMBOLS}
 
-# 텔레그램 메시지 전송 함수
+# 텔레그램 전송
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
@@ -23,7 +22,7 @@ def send_telegram(msg):
     except Exception as e:
         print(f"⚠️ 텔레그램 전송 실패: {e}")
 
-# CCI 계산 함수
+# CCI 계산
 def calculate_cci(candles, period=14):
     if len(candles) < period:
         return None
@@ -32,7 +31,7 @@ def calculate_cci(candles, period=14):
     md = np.mean(np.abs(tp - ma))
     return 0 if md == 0 else (tp[-1] - ma) / (0.015 * md)
 
-# ADX 계산 함수
+# ADX 계산
 def calculate_adx(candles, period=5):
     if len(candles) < period + 1:
         return None
@@ -49,14 +48,14 @@ def calculate_adx(candles, period=5):
     minus_di = 100 * (np.mean(minus_dm[-period:]) / atr) if atr != 0 else 0
     return abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) != 0 else 0
 
-# WebSocket 수신 처리
-def on_msg(msg):
-    global last_completed_ts
-    d = msg["data"][0]
+# 메시지 처리
+def on_msg(symbol, d):
+    global candles_dict, last_completed_ts_dict
+
     ts = int(d[0])
     candle = [ts, d[1], d[2], d[3], d[4], d[5]]
+    candles = candles_dict[symbol]
 
-    # 최신 캔들 업데이트
     if candles and candles[-1][0] == ts:
         candles[-1] = candle
     else:
@@ -64,58 +63,61 @@ def on_msg(msg):
         if len(candles) > MAX_CANDLES:
             candles.pop(0)
 
-        # 캔들 완성 시점 (이전 캔들)
         if len(candles) >= 20:
             prev_candle = candles[-2]
             prev_ts = prev_candle[0]
-            if last_completed_ts == prev_ts:
-                return  # 중복 방지
-            last_completed_ts = prev_ts
+            if last_completed_ts_dict[symbol] == prev_ts:
+                return
+            last_completed_ts_dict[symbol] = prev_ts
 
-            # 출력 및 지표 계산
             time_str = f"{datetime.fromtimestamp(prev_ts / 1000):%Y-%m-%d %H:%M:%S}"
-            print(f"\n✅ 완성된 캔들 ▶️ {time_str} | O:{prev_candle[1]} H:{prev_candle[2]} L:{prev_candle[3]} C:{prev_candle[4]}")
+            print(f"\n✅ [{symbol}] 완성 캔들 ▶️ {time_str} | O:{prev_candle[1]} H:{prev_candle[2]} L:{prev_candle[3]} C:{prev_candle[4]}")
 
             cci = calculate_cci(candles[:-1], 14)
             adx = calculate_adx(candles[:-1], 5)
-
             if cci is not None and adx is not None:
-                log = f"📊 CCI(14): {cci:.2f} | ADX(5): {adx:.2f}"
+                log = f"📊 [{symbol}] CCI(14): {cci:.2f} | ADX(5): {adx:.2f}"
                 print(log)
                 send_telegram(log)
 
-    # 실시간 업데이트 로그 (선택적으로 출력 가능)
-    print(f"🕒 {datetime.fromtimestamp(ts/1000):%Y-%m-%d %H:%M:%S} | O:{d[1]} H:{d[2]} L:{d[3]} C:{d[4]} V:{d[5]}")
+    # 실시간 업데이트 로그 (원하면 출력 생략 가능)
+    if last_completed_ts_dict[symbol] != ts:
+        print(f"🕒 [{symbol}] {datetime.fromtimestamp(ts/1000):%Y-%m-%d %H:%M:%S} | O:{d[1]} H:{d[2]} L:{d[3]} C:{d[4]} V:{d[5]}")
 
 # WebSocket 루프
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
-    while True:
-        try:
-            async with websockets.connect(uri, ping_interval=20, ping_timeout=30) as ws:
-                payload = {
-                    "op": "subscribe",
-                    "args": [{
-                        "instType": INST_TYPE,
-                        "channel": CHANNEL,
-                        "instId": SYMBOL
-                    }]
-                }
-                print("📤 전송 메시지:", json.dumps(payload))
-                await ws.send(json.dumps(payload))
-                print("✅ WS 연결됨 / candle1m 구독 시도")
+    try:
+        async with websockets.connect(uri, ping_interval=20, ping_timeout=30) as ws:
+            args = [{
+                "instType": INST_TYPE,
+                "channel": CHANNEL,
+                "instId": symbol
+            } for symbol in SYMBOLS]
 
-                while True:
-                    msg = json.loads(await ws.recv())
-                    if msg.get("event") == "error":
-                        print(f"❌ 에러 응답: {msg}")
-                        break
-                    if msg.get("action") in ["snapshot", "update"]:
-                        on_msg(msg)
-        except Exception as e:
-            print(f"⚠️ WebSocket 연결 오류: {e}")
-            print("🔁 5초 후 재연결 시도 중...")
-            await asyncio.sleep(5)
+            payload = {"op": "subscribe", "args": args}
+            print("📤 구독 요청:", json.dumps(payload))
+            await ws.send(json.dumps(payload))
+            print("✅ WebSocket 연결됨 및 구독 완료")
+
+            while True:
+                msg = json.loads(await ws.recv())
+                if msg.get("event") == "error":
+                    print(f"❌ 에러 응답: {msg}")
+                    break
+                if msg.get("action") in ["snapshot", "update"]:
+                    data = msg.get("data", [])
+                    if not data:
+                        continue
+                    d = data[0]
+                    inst_id = msg.get("arg", {}).get("instId")
+                    if inst_id in SYMBOLS:
+                        on_msg(inst_id, d)
+    except Exception as e:
+        print(f"⚠️ WebSocket 오류: {e}")
+        print("🔁 5초 후 재시도")
+        await asyncio.sleep(5)
+        await ws_loop()
 
 if __name__ == "__main__":
     asyncio.run(ws_loop())
