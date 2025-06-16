@@ -2,17 +2,20 @@ import asyncio, json, websockets, requests
 from datetime import datetime
 import numpy as np
 
+# 설정 값
 SYMBOL = "BTCUSDT"
-INST_TYPE = "mc"  # ✅ 수정: "UMCBL" → "mc"
-CHANNEL = "candle1m"  # ✅ 수정: 채널 이름에 타임프레임 포함
+INST_TYPE = "USDT-FUTURES"  # ✅ 공식 문서에 명시된 정확한 값
+CHANNEL = "candle1m"
 MAX_CANDLES = 150
 candles = []
 
+# 텔레그램 정보 입력
 BOT_TOKEN = "7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU"
 CHAT_ID = "1797494660"
 
 last_completed_ts = None
 
+# 텔레그램 메시지 전송
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
@@ -20,6 +23,7 @@ def send_telegram(msg):
     except Exception as e:
         print(f"⚠️ 텔레그램 전송 실패: {e}")
 
+# CCI 계산
 def calculate_cci(candles, period=14):
     if len(candles) < period:
         return None
@@ -28,6 +32,7 @@ def calculate_cci(candles, period=14):
     md = np.mean(np.abs(tp - ma))
     return 0 if md == 0 else (tp[-1] - ma) / (0.015 * md)
 
+# ADX 계산
 def calculate_adx(candles, period=5):
     if len(candles) < period + 1:
         return None
@@ -44,6 +49,7 @@ def calculate_adx(candles, period=5):
     minus_di = 100 * (np.mean(minus_dm[-period:]) / atr) if atr != 0 else 0
     return abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) != 0 else 0
 
+# WebSocket 메시지 수신 시 처리
 def on_msg(msg):
     global last_completed_ts
     d = msg["data"][0]
@@ -76,6 +82,7 @@ def on_msg(msg):
             print(log)
             send_telegram(log)
 
+# WebSocket 연결 루프
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
     while True:
@@ -84,14 +91,15 @@ async def ws_loop():
                 payload = {
                     "op": "subscribe",
                     "args": [{
-                        "instType": INST_TYPE,  # ✅ "mc"
-                        "channel": CHANNEL,     # ✅ "candle1m"
-                        "instId": SYMBOL
+                        "instType": INST_TYPE,   # "USDT-FUTURES"
+                        "channel": CHANNEL,      # "candle1m"
+                        "instId": SYMBOL         # "BTCUSDT"
                     }]
                 }
                 print("📤 전송 메시지:", json.dumps(payload))
                 await ws.send(json.dumps(payload))
                 print("✅ WS 연결됨 / candle1m 구독 시도")
+
                 while True:
                     msg = json.loads(await ws.recv())
                     if msg.get("event") == "error":
