@@ -5,9 +5,9 @@ import base64
 import requests
 
 # 👉 여기에 너의 API 키 정보 입력
-api_key = "너의_API_KEY"
-api_secret = "너의_API_SECRET"
-passphrase = "너의_API_PASSPHRASE"
+api_key = "bg_a9c07aa3168e846bfaa713fe9af79d14"
+api_secret = "5be628fd41dce5eff78a607f31d096a4911d4e2156b6d66a14be20f027068043"
+passphrase = "1q2w3e4r"
 
 # 요청 관련 변수
 timestamp = str(int(time.time() * 1000))  # 밀리초 단위 타임스탬프
