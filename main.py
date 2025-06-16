@@ -1,46 +1,64 @@
 import time
 import hmac
-import hashlib
 import base64
 import requests
 
-# 👉 여기에 너의 API 키 정보 입력
-api_key = "bg_a9c07aa3168e846bfaa713fe9af79d14"
-api_secret = "5be628fd41dce5eff78a607f31d096a4911d4e2156b6d66a14be20f027068043"
-passphrase = "1q2w3e4r"
+# ✅ [1] API 정보 입력
+API_KEY = "bg_a9c07aa3168e846bfaa713fe9af79d14"
+API_SECRET = "5be628fd41dce5eff78a607f31d096a4911d4e2156b6d66a14be20f027068043"
+API_PASSPHRASE = "1q2w3e4r"
+BASE_URL = "https://api.bitget.com"
 
-# 요청 관련 변수
-timestamp = str(int(time.time() * 1000))  # 밀리초 단위 타임스탬프
-method = "GET"
-request_path = "/api/mix/v1/account/account"
-query_string = "marginCoin=USDT"
-full_path = f"{request_path}?{query_string}"
+# ✅ [2] 타임스탬프 생성 함수
+def get_timestamp():
+    return int(time.time() * 1000)
 
-# pre-hash 조합 (GET 방식은 ?query 포함)
-pre_hash = f"{timestamp}{method}{full_path}"
+# ✅ [3] 서명 생성 함수
+def sign_message(message, secret_key):
+    mac = hmac.new(bytes(secret_key, encoding='utf8'),
+                   bytes(message, encoding='utf-8'),
+                   digestmod='sha256')
+    return base64.b64encode(mac.digest()).decode()
 
-# 서명 생성
-signature = base64.b64encode(
-    hmac.new(api_secret.encode(), pre_hash.encode(), hashlib.sha256).digest()
-).decode()
+# ✅ [4] 파라미터 → 쿼리 문자열 변환
+def parse_params_to_str(params):
+    if not params:
+        return ''
+    params = [(key, val) for key, val in params.items()]
+    params.sort(key=lambda x: x[0])
+    return '?' + '&'.join([f"{k}={v}" for k, v in params])
 
-# 헤더 구성
-headers = {
-    "ACCESS-KEY": api_key,
-    "ACCESS-SIGN": signature,
-    "ACCESS-TIMESTAMP": timestamp,
-    "ACCESS-PASSPHRASE": passphrase,
-    "Content-Type": "application/json"
-}
+# ✅ [5] 메인 요청
+if __name__ == '__main__':
+    method = "GET"
+    endpoint = "/api/v2/account/all-account-balance"
+    params = {}  # 이 API는 별도 파라미터 없음
+    query_string = parse_params_to_str(params)
+    request_path = endpoint + query_string
+    body = ""
 
-# 요청 전송
-url = f"https://api.bitget.com{full_path}"
-response = requests.get(url, headers=headers)
+    # 타임스탬프 & pre-hash
+    timestamp = get_timestamp()
+    pre_hash = f"{timestamp}{method.upper()}{request_path}{body}"
+    signature = sign_message(pre_hash, API_SECRET)
 
-# 결과 출력
-print("📡 요청 URL:", url)
-print("📄 Pre-hash:", pre_hash)
-print("📬 상태 코드:", response.status_code)
-print("📦 응답:", response.text)
+    # ✅ 헤더 구성
+    headers = {
+        "ACCESS-KEY": API_KEY,
+        "ACCESS-SIGN": signature,
+        "ACCESS-TIMESTAMP": str(timestamp),
+        "ACCESS-PASSPHRASE": PASSPHRASE,
+        "locale": "en-US"
+    }
+
+    # ✅ 요청 전송
+    url = BASE_URL + request_path
+    response = requests.get(url, headers=headers)
+
+    # ✅ 결과 출력
+    print("📡 요청 URL:", url)
+    print("📄 Pre-hash:", pre_hash)
+    print("📬 상태 코드:", response.status_code)
+    print("📦 응답:", response.text)
 
 
