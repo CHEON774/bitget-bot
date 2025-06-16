@@ -35,19 +35,16 @@ def send_telegram(message):
 def get_futures_balance():
     method = "GET"
     endpoint = "/api/mix/v1/account/account"
-    query = "marginCoin=USDT"
-    request_path = f"{endpoint}?{query}"
+    request_path = endpoint
     timestamp = str(int(time.time() * 1000))
     
-    # ✅ pre-hash 정확히 조합
+    # ❗ 쿼리 제거
     pre_hash = f"{timestamp}{method}{request_path}"
-    
-    # ✅ signature (base64 인코딩)
+
     signature = base64.b64encode(
         hmac.new(API_SECRET.encode(), pre_hash.encode(), hashlib.sha256).digest()
     ).decode()
 
-    # ✅ headers 구성
     headers = {
         "ACCESS-KEY": API_KEY,
         "ACCESS-SIGN": signature,
@@ -57,8 +54,7 @@ def get_futures_balance():
     }
 
     url = f"https://api.bitget.com{request_path}"
-    
-    # ✅ 디버깅 출력
+
     print("🧪 pre_hash:", pre_hash)
     print("🧪 SIGN:", signature)
     print("🧪 URL:", url)
