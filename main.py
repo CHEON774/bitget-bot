@@ -3,7 +3,7 @@ import hmac
 import base64
 import requests
 
-# ✅ [1] API 정보 입력
+# ✅ [1] API 정보 입력 (이름 통일)
 API_KEY = "bg_a9c07aa3168e846bfaa713fe9af79d14"
 API_SECRET = "5be628fd41dce5eff78a607f31d096a4911d4e2156b6d66a14be20f027068043"
 API_PASSPHRASE = "1q2w3e4r"
@@ -37,21 +37,19 @@ if __name__ == '__main__':
     request_path = endpoint + query_string
     body = ""
 
-    # 타임스탬프 & pre-hash
     timestamp = get_timestamp()
     pre_hash = f"{timestamp}{method.upper()}{request_path}{body}"
     signature = sign_message(pre_hash, API_SECRET)
 
-    # ✅ 헤더 구성
+    # ✅ 변수명 통일 (PASSPHRASE → API_PASSPHRASE)
     headers = {
         "ACCESS-KEY": API_KEY,
         "ACCESS-SIGN": signature,
         "ACCESS-TIMESTAMP": str(timestamp),
-        "ACCESS-PASSPHRASE": PASSPHRASE,
+        "ACCESS-PASSPHRASE": API_PASSPHRASE,
         "locale": "en-US"
     }
 
-    # ✅ 요청 전송
     url = BASE_URL + request_path
     response = requests.get(url, headers=headers)
 
