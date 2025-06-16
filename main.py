@@ -35,10 +35,11 @@ def send_telegram(message):
 def get_futures_balance():
     method = "GET"
     endpoint = "/api/mix/v1/account/account"
-    request_path = endpoint
+    query = "marginCoin=USDT"
+    request_path = f"{endpoint}?{query}"
     timestamp = str(int(time.time() * 1000))
-    
-    # ❗ 쿼리 제거
+
+    # ✅ 쿼리까지 포함해서 pre_hash 구성
     pre_hash = f"{timestamp}{method}{request_path}"
 
     signature = base64.b64encode(
