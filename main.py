@@ -4,54 +4,43 @@ import hashlib
 import base64
 import requests
 
-# ✅ 사용자 설정 (반드시 자신의 정보로 대체)
-API_KEY = "bg_a9c07aa3168e846bfaa713fe9af79d14"
-API_SECRET = "5be628fd41dce5eff78a607f31d096a4911d4e2156b6d66a14be20f027068043"
-API_PASSPHRASE = "1q2w3e4r"
+# 👉 여기에 너의 API 키 정보 입력
+api_key = "너의_API_KEY"
+api_secret = "너의_API_SECRET"
+passphrase = "너의_API_PASSPHRASE"
 
-# ✅ 서버 시간 동기화 함수 (Bitget 권장)
-def get_server_timestamp():
-    try:
-        res = requests.get("https://api.bitget.com/api/spot/v1/public/time")
-        if res.status_code == 200:
-            return str(res.json()["data"])
-        else:
-            return str(int(time.time() * 1000))
-    except:
-        return str(int(time.time() * 1000))
+# 요청 관련 변수
+timestamp = str(int(time.time() * 1000))  # 밀리초 단위 타임스탬프
+method = "GET"
+request_path = "/api/mix/v1/account/account"
+query_string = "marginCoin=USDT"
+full_path = f"{request_path}?{query_string}"
 
-# ✅ HMAC 서명 생성 함수
-def get_headers(method, path, query_string="", body=""):
-    timestamp = get_server_timestamp()
-    request_path = f"{path}?{query_string}" if query_string else path
-    pre_hash = f"{timestamp}{method.upper()}{request_path}{body}"
-    print("📄 pre-hash:", pre_hash)
-    sign = base64.b64encode(
-        hmac.new(API_SECRET.encode(), pre_hash.encode(), hashlib.sha256).digest()
-    ).decode()
+# pre-hash 조합 (GET 방식은 ?query 포함)
+pre_hash = f"{timestamp}{method}{full_path}"
 
-    return {
-        "ACCESS-KEY": API_KEY,
-        "ACCESS-SIGN": sign,
-        "ACCESS-TIMESTAMP": timestamp,
-        "ACCESS-PASSPHRASE": API_PASSPHRASE,
-        "Content-Type": "application/json"
-    }
+# 서명 생성
+signature = base64.b64encode(
+    hmac.new(api_secret.encode(), pre_hash.encode(), hashlib.sha256).digest()
+).decode()
 
-# ✅ Bitget 선물 계정 잔고 조회 함수
-def check_futures_balance():
-    method = "GET"
-    path = "/api/mix/v1/account/account"
-    query_string = "marginCoin=USDT"
-    url = f"https://api.bitget.com{path}?{query_string}"
-    headers = get_headers(method, path, query_string)
+# 헤더 구성
+headers = {
+    "ACCESS-KEY": api_key,
+    "ACCESS-SIGN": signature,
+    "ACCESS-TIMESTAMP": timestamp,
+    "ACCESS-PASSPHRASE": passphrase,
+    "Content-Type": "application/json"
+}
 
-    print("\n📡 요청 URL:", url)
-    res = requests.get(url, headers=headers)
-    print("📬 상태 코드:", res.status_code)
-    print("📦 응답:", res.text)
+# 요청 전송
+url = f"https://api.bitget.com{full_path}"
+response = requests.get(url, headers=headers)
 
-if __name__ == "__main__":
-    check_futures_balance()
+# 결과 출력
+print("📡 요청 URL:", url)
+print("📄 Pre-hash:", pre_hash)
+print("📬 상태 코드:", response.status_code)
+print("📦 응답:", response.text)
 
 
