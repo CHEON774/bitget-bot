@@ -200,5 +200,6 @@ async def ws_loop():
 
 # 메인 실행
 if __name__ == "__main__":
-    asyncio.run(ws_loop())
+ get_futures_balance()  # 🚨 API 연동 테스트용 잔액 강제 조회    
+ asyncio.run(ws_loop())
 
