@@ -4,7 +4,7 @@ import numpy as np
 
 # Bitget API 인증 정보
 API_KEY = 'bg_a9c07aa3168e846bfaa713fe9af79d14'
-API_SECRET = '5be628fd41dce5eff78a607f31d096a4911d4e2156b6d66a14be20f027068043'
+API_SECRET = '53'
 API_PASSPHRASE = '1q2w3e4r'
 
 # 텔레그램 알림 설정
@@ -26,16 +26,12 @@ trailing_active = {}
 consecutive_losses = {symbol: 0 for symbol in SYMBOLS.keys()}
 auto_trading_enabled = {symbol: True for symbol in SYMBOLS.keys()}
 
-# 텔레그램 알림
-
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
         requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message})
     except Exception as e:
         print("❌ 텔레그램 전송 실패:", e, flush=True)
-
-# Bitget 인증 헤더 생성
 
 def sign(message, secret_key):
     mac = hmac.new(bytes(secret_key, encoding='utf8'),
@@ -61,8 +57,6 @@ def get_bitget_headers(method, path, body=''):
     print("🧪 HEADERS:", headers)
     return headers
 
-# 잔액 조회
-
 def get_account_balance():
     path = "/api/v2/account/all-account-balance"
     url = f"https://api.bitget.com{path}"
@@ -73,8 +67,6 @@ def get_account_balance():
         print("✅ 잔액 조회 성공:", res.json())
     except requests.exceptions.RequestException as e:
         print("❌ 잔액 조회 실패:", e)
-
-# 주문 실행
 
 def place_order(symbol, side, amount):
     path = '/api/mix/v1/order/place'
@@ -95,8 +87,6 @@ def place_order(symbol, side, amount):
         print(f"✅ 주문 완료: {symbol} {side} {amount}")
     except requests.exceptions.RequestException as e:
         print("❌ 주문 실패:", e)
-
-# 기술 지표 계산
 
 def calculate_cci(candles, period=14):
     if len(candles) < period:
@@ -121,8 +111,6 @@ def calculate_adx(candles, period=5):
     plus_di = 100 * (np.mean(plus_dm[-period:]) / atr) if atr != 0 else 0
     minus_di = 100 * (np.mean(minus_dm[-period:]) / atr) if atr != 0 else 0
     return abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) != 0 else 0
-
-# 캔들 처리
 
 def handle_candle(symbol, data):
     global positions, entry_prices, trailing_active
@@ -185,45 +173,27 @@ def handle_candle(symbol, data):
                 send_telegram(f"🔻 {symbol} 숏 진입 @ {c}")
                 place_order(symbol, 'open_short', SYMBOLS[symbol]['amount'])
 
-# WebSocket 루프
-
-async def subscribe(ws):
-    await ws.send(json.dumps({
-        "op": "subscribe",
-        "args": [{
-            "instType": INST_TYPE,
-            "channel": CHANNEL,
-            "instId": SYMBOL
-        }]
-    }))
-    print("✅ WebSocket 연결 및 구독 완료")
-
-def on_msg(msg):
-    try:
-        d = msg["data"][0]
-        ts = int(d[0])
-        print(f"🕒 {datetime.fromtimestamp(ts/1000):%Y-%m-%d %H:%M:%S} | O:{d[1]} H:{d[2]} L:{d[3]} C:{d[4]} V:{d[5]}")
-    except Exception as e:
-        print(f"⚠️ 메시지 처리 오류: {e}")
-
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
     while True:
         try:
-            async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
-                await subscribe(ws)
+            async with websockets.connect(uri, ping_interval=10, ping_timeout=5, close_timeout=3) as ws:
+                args = [{"instType": INST_TYPE, "channel": CHANNEL, "instId": symbol} for symbol in SYMBOLS.keys()]
+                await ws.send(json.dumps({"op": "subscribe", "args": args}))
+                print("✅ WebSocket 연결 및 구독 완료", flush=True)
+
                 while True:
-                    raw = await ws.recv()
-                    msg = json.loads(raw)
-                    if msg.get("event") == "error":
-                        print(f"❌ 에러 응답: {msg}")
-                        break
-                    if msg.get("action") in ("snapshot", "update"):
-                        on_msg(msg)
+                    msg = json.loads(await ws.recv())
+                    if msg.get("action") in ["snapshot", "update"] and "arg" in msg:
+                        symbol = msg["arg"]["instId"]
+                        if symbol in SYMBOLS:
+                            handle_candle(symbol, msg["data"][0])
         except Exception as e:
-            print(f"⚠️ 연결 오류: {e}\n🔁 5초 후 재연결 시도...")
-            await asyncio.sleep(5)
+            print(f"⚠️ 메시지 처리 오류: {e}", flush=True)
+        print("🔁 5초 후 재연결 시도...", flush=True)
+        await asyncio.sleep(5)
 
 if __name__ == "__main__":
+    get_account_balance()
     asyncio.run(ws_loop())
 
