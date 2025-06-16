@@ -1,6 +1,11 @@
-import asyncio, json, websockets, requests
+import asyncio, json, websockets, requests, hmac, hashlib, time
 from datetime import datetime
 import numpy as np
+
+# Bitget API 인증 정보
+API_KEY = 'bg_534f4dcd8acb22273de01247d163845e'
+API_SECRET = 'df5f0c3a596070ab8f940a8faeb2ebac2fdba90b8e1e096a05bb2e01ad13cf9d'
+API_PASSPHRASE = '1q2w3e4r'
 
 # 기본 설정
 SYMBOLS = {
@@ -16,8 +21,8 @@ entry_prices = {}
 trailing_active = {}
 
 # 텔레그램 설정
-TELEGRAM_TOKEN = '여기에_봇_토큰'
-TELEGRAM_CHAT_ID = '여기에_챗ID'
+TELEGRAM_TOKEN = '7787612607:AAEHWXld8OqmK3OeGmo2nJdmx-Bg03h85UQ'
+TELEGRAM_CHAT_ID = '1797494660'
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -25,6 +30,38 @@ def send_telegram(message):
         requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message})
     except Exception as e:
         print("❌ 텔레그램 전송 실패:", e, flush=True)
+
+def get_bitget_headers(method, path, body=''):
+    timestamp = str(int(time.time() * 1000))
+    message = f'{timestamp}{method}{path}{body}'
+    signature = hmac.new(API_SECRET.encode(), message.encode(), hashlib.sha256).hexdigest()
+    return {
+        'ACCESS-KEY': API_KEY,
+        'ACCESS-SIGN': signature,
+        'ACCESS-TIMESTAMP': timestamp,
+        'ACCESS-PASSPHRASE': API_PASSPHRASE,
+        'Content-Type': 'application/json'
+    }
+
+def place_order(symbol, side, amount):
+    path = '/api/mix/v1/order/place'
+    url = f'https://api.bitget.com{path}'
+    data = {
+        "symbol": symbol,
+        "marginCoin": "USDT",
+        "size": str(amount),
+        "side": side,
+        "orderType": "market",
+        "tradeSide": side,
+        "productType": "UMCBL"
+    }
+    headers = get_bitget_headers('POST', path, json.dumps(data))
+    res = requests.post(url, headers=headers, json=data)
+    if res.status_code == 200:
+        print(f"✅ 실전 주문 완료: {symbol} {side} {amount}", flush=True)
+    else:
+        print(f"❌ 주문 실패: {res.text}", flush=True)
+
 
 def calculate_cci(candles, period=14):
     if len(candles) < period:
@@ -79,6 +116,7 @@ def handle_candle(symbol, data):
                 positions[symbol] = None
                 entry_prices[symbol] = None
                 trailing_active[symbol] = None
+                place_order(symbol, 'close_long' if positions[symbol] == 'long' else 'close_short', SYMBOLS[symbol]['amount'])
 
         # 진입 판단
         cci = calculate_cci(store[:-1], 14)
@@ -92,11 +130,13 @@ def handle_candle(symbol, data):
                 entry_prices[symbol] = float(c)
                 trailing_active[symbol] = None
                 send_telegram(f"🚀 {symbol} 롱 진입 @ {c}")
+                place_order(symbol, 'open_long', SYMBOLS[symbol]['amount'])
             elif cci < -100 and positions.get(symbol) != 'short':
                 positions[symbol] = 'short'
                 entry_prices[symbol] = float(c)
                 trailing_active[symbol] = None
                 send_telegram(f"🔻 {symbol} 숏 진입 @ {c}")
+                place_order(symbol, 'open_short', SYMBOLS[symbol]['amount'])
 
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
