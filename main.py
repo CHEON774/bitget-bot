@@ -1,8 +1,8 @@
 import time, hmac, hashlib, base64, json, requests
 
 # ✅ API 인증 정보 입력
-API_KEY = "bg_534f4dcd8acb22273de01247d163845e"
-API_SECRET = "df5f0c3a596070ab8f940a8faeb2ebac2fdba90b8e1e096a05bb2e01ad13cf9d"
+API_KEY = "bg_a9c07aa3168e846bfaa713fe9af79d14"
+API_SECRET = "5be628fd41dce5eff78a607f31d096a4911d4e2156b6d66a14be20f027068043"
 API_PASSPHRASE = "1q2w3e4r"
 
 # ✅ 텔레그램 봇 정보 입력
