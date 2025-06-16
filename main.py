@@ -10,11 +10,18 @@ BASE_URL = "https://api.bitget.com"
 BOT_TOKEN = "7787612607:AAEHWXld8OqmK3OeGmo2nJdmx-Bg03h85UQ"
 CHAT_ID = "1797494660"
 
+
 SYMBOLS = ["BTCUSDT", "ETHUSDT"]
 INST_TYPE = "USDT-FUTURES"
 CANDLE_CHANNEL = "candle15m"
 TICKER_CHANNEL = "ticker"
 MAX_CANDLES = 150
+
+# === 심볼별 진입 금액 & 레버리지 설정 ===
+ENTRY_CONFIG = {
+    "BTCUSDT": {"amount": 150, "leverage": 10},
+    "ETHUSDT": {"amount": 120, "leverage": 7}
+}
 
 # === 상태 ===
 candles = {s: [] for s in SYMBOLS}
@@ -29,14 +36,11 @@ def send_telegram(msg):
     except Exception as e:
         print(f"⚠️ 텔레그램 전송 실패: {e}")
 
-# === WebSocket 서명 ===
-def get_ws_signature(timestamp):
-    message = f'{timestamp}GET/user/verify'
-    sign = hmac.new(API_SECRET.encode(), message.encode(), hashlib.sha256).hexdigest()
-    return sign
-
 # === 주문 전송 ===
-def place_order(symbol, side):
+def place_order(symbol, side, price):
+    entry_amount = ENTRY_CONFIG[symbol]['amount']
+    leverage = ENTRY_CONFIG[symbol]['leverage']
+    qty = round(entry_amount * leverage / price, 4)
     timestamp = str(int(time.time() * 1000))
     path = "/api/mix/v1/order/place"
     url = BASE_URL + path
@@ -45,7 +49,7 @@ def place_order(symbol, side):
         "marginCoin": "USDT",
         "side": side,
         "orderType": "market",
-        "size": "0.01",
+        "size": str(qty),
         "productType": "umcbl"
     }
     message = timestamp + "POST" + path + json.dumps(body)
@@ -106,14 +110,17 @@ def handle_candle(symbol, d):
             if cci and adx and cci > 100 and adx > 25 and position[symbol] is None:
                 entry = float(prev[4])
                 position[symbol] = {'entry': entry, 'trail_active': False, 'trail_stop': None, 'max_price': entry}
-                place_order(symbol, 'open_long')
+                place_order(symbol, 'open_long', entry)
                 print(f"🚀 진입: {symbol} @ {entry}")
                 send_telegram(f"🚀 {symbol} 진입 @ {entry:.2f}")
 
 # === 실시간 가격 추적 ===
 def handle_ticker(symbol, d):
     d = d[0] if isinstance(d, list) else d
-    current = float(d['last'])
+    if 'lastPr' not in d:
+        print(f"⚠️ 'lastPr' 키 없음: {d}")
+        return
+    current = float(d['lastPr'])
     pos = position.get(symbol)
     if not pos: return
     entry = pos['entry']
@@ -128,7 +135,7 @@ def handle_ticker(symbol, d):
         pos['max_price'] = max(pos['max_price'], current)
         pos['trail_stop'] = pos['max_price'] * 0.997
         if current <= pos['trail_stop']:
-            place_order(symbol, 'close_long')
+            place_order(symbol, 'close_long', current)
             print(f"💥 청산: {symbol} @ {current:.2f}")
             send_telegram(f"💥 {symbol} 청산 @ {current:.2f}")
             position[symbol] = None
