@@ -34,27 +34,15 @@ def send_telegram(message):
 # ✅ 잔액 조회 함수 통합
 def get_futures_balance():
     method = "GET"
-    endpoint = "/api/v2/account/all-account-balance"
-    request_path = endpoint
-    body = ""
+    endpoint = "/api/mix/v1/account/account"
+    query = "?marginCoin=USDT"
+    request_path = endpoint + query
     timestamp = str(int(time.time() * 1000))
-    pre_hash = f"{timestamp}{method}{request_path}{body}"
+    pre_hash = f"{timestamp}{method}{request_path}"
     
-    # 👉 여기에 추가
     signature = base64.b64encode(
         hmac.new(API_SECRET.encode(), pre_hash.encode(), hashlib.sha256).digest()
     ).decode()
-
-    # 🔍 디버깅 출력
-    print("🧪 pre_hash:", pre_hash)
-    print("🧪 SIGN:", signature)
-    print("🧪 HEADERS:", {
-        "ACCESS-KEY": API_KEY,
-        "ACCESS-SIGN": signature,
-        "ACCESS-TIMESTAMP": timestamp,
-        "ACCESS-PASSPHRASE": API_PASSPHRASE,
-        "locale": "en-US"
-    })
 
     headers = {
         "ACCESS-KEY": API_KEY,
@@ -64,20 +52,14 @@ def get_futures_balance():
         "locale": "en-US"
     }
 
-    ...
-
-
     url = "https://api.bitget.com" + request_path
     try:
         res = requests.get(url, headers=headers, timeout=10)
         res.raise_for_status()
-        data = res.json().get("data", [])
-        fut = next((x for x in data if x["accountType"] == "futures"), None)
-        if fut:
-            print(f"💰 현재 Futures USDT 잔액: {fut['usdtBalance']}", flush=True)
-            send_telegram(f"💰 현재 Futures 잔액: {fut['usdtBalance']} USDT")
-        else:
-            print("❗ Futures 계좌 정보 없음", flush=True)
+        data = res.json().get("data", {})
+        usdt = data.get("totalEquity", "0")
+        print(f"💰 Futures 계좌 총 USDT: {usdt}", flush=True)
+        send_telegram(f"💰 현재 Futures 잔액 (v1): {usdt} USDT")
     except Exception as e:
         print("❌ 잔액 조회 실패:", e, flush=True)
 
