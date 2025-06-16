@@ -5,7 +5,7 @@ import numpy as np
 # 설정
 SYMBOLS = ["BTCUSDT", "ETHUSDT"]
 INST_TYPE = "USDT-FUTURES"
-CHANNEL = "candle1m"
+CHANNEL = "candle15m"  # ✅ 15분봉으로 변경
 MAX_CANDLES = 150
 BOT_TOKEN = "여기에_봇토큰_입력"
 CHAT_ID = "여기에_chat_id_입력"
@@ -71,7 +71,7 @@ def on_msg(symbol, d):
             last_completed_ts_dict[symbol] = prev_ts
 
             time_str = f"{datetime.fromtimestamp(prev_ts / 1000):%Y-%m-%d %H:%M:%S}"
-            print(f"\n✅ [{symbol}] 완성 캔들 ▶️ {time_str} | O:{prev_candle[1]} H:{prev_candle[2]} L:{prev_candle[3]} C:{prev_candle[4]}")
+            print(f"\n✅ [{symbol}] 15분봉 완성 ▶️ {time_str} | O:{prev_candle[1]} H:{prev_candle[2]} L:{prev_candle[3]} C:{prev_candle[4]}")
 
             cci = calculate_cci(candles[:-1], 14)
             adx = calculate_adx(candles[:-1], 5)
@@ -80,7 +80,7 @@ def on_msg(symbol, d):
                 print(log)
                 send_telegram(log)
 
-    # 실시간 업데이트 로그 (원하면 출력 생략 가능)
+    # 실시간 출력 (원한다면 생략 가능)
     if last_completed_ts_dict[symbol] != ts:
         print(f"🕒 [{symbol}] {datetime.fromtimestamp(ts/1000):%Y-%m-%d %H:%M:%S} | O:{d[1]} H:{d[2]} L:{d[3]} C:{d[4]} V:{d[5]}")
 
@@ -98,7 +98,7 @@ async def ws_loop():
             payload = {"op": "subscribe", "args": args}
             print("📤 구독 요청:", json.dumps(payload))
             await ws.send(json.dumps(payload))
-            print("✅ WebSocket 연결됨 및 구독 완료")
+            print("✅ WebSocket 연결됨 / 15분봉 구독 시작")
 
             while True:
                 msg = json.loads(await ws.recv())
