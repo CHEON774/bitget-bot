@@ -29,10 +29,9 @@ def get_headers(method, path, query_string="", body=""):
     }
 
 def check_balance():
-    symbol = "BTCUSDT"
     marginCoin = "USDT"
-    query = f"symbol={symbol}&marginCoin={marginCoin}"
     path = "/api/mix/v1/account/account"
+    query = f"marginCoin={marginCoin}"
     url = f"https://api.bitget.com{path}?{query}"
     headers = get_headers("GET", path, query_string=query)
 
@@ -50,6 +49,7 @@ def check_balance():
         err = f"❌ API 연동 실패: 코드 {res.status_code}, 본문: {res.text}"
         print(err)
         send_telegram(err)
+
 
 if __name__ == "__main__":
     check_balance()
