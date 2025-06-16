@@ -112,6 +112,7 @@ def handle_candle(symbol, d):
 
 # === 실시간 가격 추적 ===
 def handle_ticker(symbol, d):
+    d = d[0] if isinstance(d, list) else d
     current = float(d['last'])
     pos = position.get(symbol)
     if not pos: return
