@@ -3,12 +3,13 @@ from datetime import datetime
 import numpy as np
 
 SYMBOL = "BTCUSDT"
-INST_TYPE = "UMCBL"
+INST_TYPE = "mc"  # ✅ 수정: "UMCBL" → "mc"
+CHANNEL = "candle1m"  # ✅ 수정: 채널 이름에 타임프레임 포함
 MAX_CANDLES = 150
 candles = []
 
-BOT_TOKEN = "여기에_봇토큰_입력"
-CHAT_ID = "여기에_chat_id_입력"
+BOT_TOKEN = "7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU"
+CHAT_ID = "1797494660"
 
 last_completed_ts = None
 
@@ -83,10 +84,9 @@ async def ws_loop():
                 payload = {
                     "op": "subscribe",
                     "args": [{
-                        "instType": INST_TYPE,
-                        "channel": "candle",
-                        "instId": SYMBOL,
-                        "timeFrame": "1m"
+                        "instType": INST_TYPE,  # ✅ "mc"
+                        "channel": CHANNEL,     # ✅ "candle1m"
+                        "instId": SYMBOL
                     }]
                 }
                 print("📤 전송 메시지:", json.dumps(payload))
