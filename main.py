@@ -34,17 +34,15 @@ def send_telegram(message):
 # ✅ 잔액 조회 함수 통합
 def get_futures_balance():
     method = "GET"
-    endpoint = "/api/mix/v1/account/account"
-    query = "marginCoin=USDT"
-    request_path = f"{endpoint}?{query}"
+    request_path = "/api/mix/v1/account/account?marginCoin=USDT"
     timestamp = str(int(time.time() * 1000))
-
-    # ✅ 쿼리까지 포함해서 pre_hash 구성
     pre_hash = f"{timestamp}{method}{request_path}"
 
-    signature = base64.b64encode(
-        hmac.new(API_SECRET.encode(), pre_hash.encode(), hashlib.sha256).digest()
-    ).decode()
+    signature = hmac.new(
+        API_SECRET.encode(),
+        pre_hash.encode(),
+        hashlib.sha256
+    ).hexdigest()
 
     headers = {
         "ACCESS-KEY": API_KEY,
@@ -55,21 +53,17 @@ def get_futures_balance():
     }
 
     url = f"https://api.bitget.com{request_path}"
-
     print("🧪 pre_hash:", pre_hash)
     print("🧪 SIGN:", signature)
-    print("🧪 URL:", url)
-    print("🧪 HEADERS:", headers)
 
     try:
         res = requests.get(url, headers=headers, timeout=10)
         res.raise_for_status()
-        data = res.json().get("data", {})
-        usdt = data.get("totalEquity", "0")
-        print(f"💰 Futures 계좌 총 USDT: {usdt}", flush=True)
-        send_telegram(f"💰 현재 Futures 잔액: {usdt} USDT")
+        data = res.json()["data"]
+        print(f"💰 USDT 잔액: {data.get('totalEquity', '0')}", flush=True)
     except Exception as e:
         print("❌ 잔액 조회 실패:", e, flush=True)
+
 
 
 
