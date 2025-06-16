@@ -33,10 +33,12 @@ def send_telegram(message):
 
 # ✅ Bitget 잔액 조회 (v1 API + hexdigest 서명 방식)
 def get_futures_balance():
-    method = "GET"
-    request_path = "/api/mix/v1/account/account?marginCoin=USDT"
+    method = "POST"
+    path = "/api/mix/v1/account/account"
+    body_dict = {"marginCoin": "USDT"}
+    body = json.dumps(body_dict)
     timestamp = str(int(time.time() * 1000))
-    pre_hash = f"{timestamp}{method}{request_path}"
+    pre_hash = f"{timestamp}{method}{path}{body}"
 
     signature = hmac.new(
         API_SECRET.encode(),
@@ -49,53 +51,26 @@ def get_futures_balance():
         "ACCESS-SIGN": signature,
         "ACCESS-TIMESTAMP": timestamp,
         "ACCESS-PASSPHRASE": API_PASSPHRASE,
+        "Content-Type": "application/json",
         "locale": "en-US"
     }
 
-    url = f"https://api.bitget.com{request_path}"
-    print("\U0001f9ea pre_hash:", pre_hash)
-    print("\U0001f9ea SIGN:", signature)
+    url = "https://api.bitget.com" + path
+    print("🧪 pre_hash:", pre_hash)
+    print("🧪 SIGN:", signature)
+    print("🧪 URL:", url)
+    print("🧪 BODY:", body)
 
     try:
-        res = requests.get(url, headers=headers, timeout=10)
+        res = requests.post(url, headers=headers, data=body, timeout=10)
         res.raise_for_status()
         data = res.json()["data"]
         usdt = data.get("totalEquity", "0")
-        print(f"\ud83d\udcb0 USDT 잔액: {usdt}", flush=True)
-        send_telegram(f"\ud83d\udcb0 현재 Futures 잔액: {usdt} USDT")
+        print(f"💰 USDT 잔액: {usdt}", flush=True)
+        send_telegram(f"💰 현재 Futures 잔액: {usdt} USDT")
     except Exception as e:
-        print("\u274c \uc794액 \uc870회 \uc2e4패:", e, flush=True)
+        print("❌ 잔액 조회 실패:", e, flush=True)
 
-def get_bitget_headers(method, path, body=''):
-    timestamp = str(int(time.time() * 1000))
-    message = f'{timestamp}{method}{path}{body}'
-    signature = hmac.new(API_SECRET.encode(), message.encode(), hashlib.sha256).hexdigest()
-    return {
-        'ACCESS-KEY': API_KEY,
-        'ACCESS-SIGN': signature,
-        'ACCESS-TIMESTAMP': timestamp,
-        'ACCESS-PASSPHRASE': API_PASSPHRASE,
-        'Content-Type': 'application/json'
-    }
-
-def place_order(symbol, side, amount):
-    path = '/api/mix/v1/order/place'
-    url = f'https://api.bitget.com{path}'
-    data = {
-        "symbol": symbol,
-        "marginCoin": "USDT",
-        "size": str(amount),
-        "side": side,
-        "orderType": "market",
-        "tradeSide": side,
-        "productType": "UMCBL"
-    }
-    headers = get_bitget_headers('POST', path, json.dumps(data))
-    res = requests.post(url, headers=headers, json=data)
-    if res.status_code == 200:
-        print(f"✅ 실전 주문 완료: {symbol} {side} {amount}", flush=True)
-    else:
-        print(f"❌ 주문 실패: {res.text}", flush=True)
 
 def calculate_cci(candles, period=14):
     if len(candles) < period:
