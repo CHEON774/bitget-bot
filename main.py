@@ -1,4 +1,4 @@
-import asyncio, json, websockets, requests, hmac, hashlib, time, base64
+import asyncio, json, websockets, requests, hmac, hashlib, time
 from datetime import datetime
 import numpy as np
 
@@ -21,7 +21,7 @@ entry_prices = {}
 trailing_active = {}
 
 # 텔레그램 설정
-TELEGRAM_TOKEN = '7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU'
+TELEGRAM_TOKEN = '7787612607:AAEHWXld8OqmK3OeGmo2nJdmx-Bg03h85UQ'
 TELEGRAM_CHAT_ID = '1797494660'
 
 def send_telegram(message):
@@ -31,7 +31,7 @@ def send_telegram(message):
     except Exception as e:
         print("❌ 텔레그램 전송 실패:", e, flush=True)
 
-# ✅ 잔액 조회 함수 통합
+# ✅ Bitget 잔액 조회 (v1 API + hexdigest 서명 방식)
 def get_futures_balance():
     method = "GET"
     request_path = "/api/mix/v1/account/account?marginCoin=USDT"
@@ -53,21 +53,19 @@ def get_futures_balance():
     }
 
     url = f"https://api.bitget.com{request_path}"
-    print("🧪 pre_hash:", pre_hash)
-    print("🧪 SIGN:", signature)
+    print("\U0001f9ea pre_hash:", pre_hash)
+    print("\U0001f9ea SIGN:", signature)
 
     try:
         res = requests.get(url, headers=headers, timeout=10)
         res.raise_for_status()
         data = res.json()["data"]
-        print(f"💰 USDT 잔액: {data.get('totalEquity', '0')}", flush=True)
+        usdt = data.get("totalEquity", "0")
+        print(f"\ud83d\udcb0 USDT 잔액: {usdt}", flush=True)
+        send_telegram(f"\ud83d\udcb0 현재 Futures 잔액: {usdt} USDT")
     except Exception as e:
-        print("❌ 잔액 조회 실패:", e, flush=True)
+        print("\u274c \uc794액 \uc870회 \uc2e4패:", e, flush=True)
 
-
-
-
-# ✅ 주문
 def get_bitget_headers(method, path, body=''):
     timestamp = str(int(time.time() * 1000))
     message = f'{timestamp}{method}{path}{body}'
@@ -99,7 +97,6 @@ def place_order(symbol, side, amount):
     else:
         print(f"❌ 주문 실패: {res.text}", flush=True)
 
-# 기술 지표 계산
 def calculate_cci(candles, period=14):
     if len(candles) < period:
         return None
@@ -122,7 +119,6 @@ def calculate_adx(candles, period=5):
     minus_di = 100 * (np.mean(minus_dm[-period:]) / atr) if atr != 0 else 0
     return abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) != 0 else 0
 
-# 캔들 처리
 def handle_candle(symbol, data):
     global positions, entry_prices, trailing_active
 
@@ -141,7 +137,6 @@ def handle_candle(symbol, data):
         if len(store) < 20:
             return
 
-        # 잔액 조회 예시: 매 30분마다
         if datetime.fromtimestamp(ts / 1000).minute % 30 == 0 and datetime.fromtimestamp(ts / 1000).second < 5:
             get_futures_balance()
 
@@ -160,7 +155,6 @@ def handle_candle(symbol, data):
                 entry_prices[symbol] = None
                 trailing_active[symbol] = None
 
-        # 진입 조건 판단
         cci = calculate_cci(store[:-1], 14)
         adx = calculate_adx(store[:-1], 5)
         if cci is None or adx is None:
@@ -180,7 +174,6 @@ def handle_candle(symbol, data):
                 send_telegram(f"🔻 {symbol} 숏 진입 @ {c}")
                 place_order(symbol, 'open_short', SYMBOLS[symbol]['amount'])
 
-# WebSocket 루프
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
     while True:
@@ -201,8 +194,6 @@ async def ws_loop():
         print("🔁 5초 후 재연결 시도...", flush=True)
         await asyncio.sleep(5)
 
-# 메인 실행
 if __name__ == "__main__":
- get_futures_balance()  # 🚨 API 연동 테스트용 잔액 강제 조회    
- asyncio.run(ws_loop())
-
+    get_futures_balance()
+    asyncio.run(ws_loop())
