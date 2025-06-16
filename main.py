@@ -24,22 +24,24 @@ def send_telegram(message):
 # ✅ Bitget 서명 생성 함수
 def get_headers(method, path, query_string="", body=""):
     timestamp = str(int(time.time() * 1000))
-    request_path = path + (f"?{query_string}" if query_string else "")
-    pre_hash = f"{timestamp}{method.upper()}{request_path}{body}"
-    print("\n🔍 get_headers 호출함")
+    
+    # ⚠️ pre-hash는 정확한 순서로 구성되어야 함
+    pre_hash = f"{timestamp}{method.upper()}{path}{query_string}"
     print(f"📄 pre-hash 문자열: {pre_hash}")
 
     sign = base64.b64encode(
         hmac.new(API_SECRET.encode(), pre_hash.encode(), hashlib.sha256).digest()
     ).decode()
 
-    return {
+    headers = {
         "ACCESS-KEY": API_KEY,
         "ACCESS-SIGN": sign,
         "ACCESS-TIMESTAMP": timestamp,
         "ACCESS-PASSPHRASE": API_PASSPHRASE,
         "Content-Type": "application/json"
     }
+    return headers
+
 
 # ✅ 잔고 조회 함수
 def check_balance():
