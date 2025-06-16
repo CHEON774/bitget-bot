@@ -1,20 +1,27 @@
-import asyncio, json, websockets, requests
+import asyncio, json, hmac, hashlib, time, requests, websockets
 from datetime import datetime
 import numpy as np
 
-# 설정
-SYMBOLS = ["BTCUSDT", "ETHUSDT"]
-INST_TYPE = "USDT-FUTURES"
-CHANNEL = "candle15m"  # ✅ 15분봉으로 변경
-MAX_CANDLES = 150
+# === 사용자 설정 ===
+API_KEY = 'bg_534f4dcd8acb22273de01247d163845e'
+API_SECRET = 'df5f0c3a596070ab8f940a8faeb2ebac2fdba90b8e1e096a05bb2e01ad13cf9d'
+API_PASSPHRASE = '1q2w3e4r'
+BASE_URL = "https://api.bitget.com"
 BOT_TOKEN = "7787612607:AAEHWXld8OqmK3OeGmo2nJdmx-Bg03h85UQ"
 CHAT_ID = "1797494660"
 
-# 심볼별 상태 저장
-candles_dict = {symbol: [] for symbol in SYMBOLS}
-last_completed_ts_dict = {symbol: None for symbol in SYMBOLS}
+SYMBOLS = ["BTCUSDT", "ETHUSDT"]
+INST_TYPE = "USDT-FUTURES"
+CANDLE_CHANNEL = "candle15m"
+TICKER_CHANNEL = "ticker"
+MAX_CANDLES = 150
 
-# 텔레그램 전송
+# === 상태 ===
+candles = {s: [] for s in SYMBOLS}
+last_ts = {s: None for s in SYMBOLS}
+position = {s: None for s in SYMBOLS}  # {'entry': float, 'trail_active': bool, 'trail_stop': float, 'max_price': float}
+
+# === 텔레그램 전송 ===
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
@@ -22,102 +29,128 @@ def send_telegram(msg):
     except Exception as e:
         print(f"⚠️ 텔레그램 전송 실패: {e}")
 
-# CCI 계산
-def calculate_cci(candles, period=14):
-    if len(candles) < period:
-        return None
-    tp = np.array([(float(c[2]) + float(c[3]) + float(c[4])) / 3 for c in candles[-period:]])
+# === WebSocket 서명 ===
+def get_ws_signature(timestamp):
+    message = f'{timestamp}GET/user/verify'
+    sign = hmac.new(API_SECRET.encode(), message.encode(), hashlib.sha256).hexdigest()
+    return sign
+
+# === 주문 전송 ===
+def place_order(symbol, side):
+    timestamp = str(int(time.time() * 1000))
+    path = "/api/mix/v1/order/place"
+    url = BASE_URL + path
+    body = {
+        "symbol": symbol,
+        "marginCoin": "USDT",
+        "side": side,
+        "orderType": "market",
+        "size": "0.01",
+        "productType": "umcbl"
+    }
+    message = timestamp + "POST" + path + json.dumps(body)
+    sign = hmac.new(API_SECRET.encode(), message.encode(), hashlib.sha256).hexdigest()
+    headers = {
+        "ACCESS-KEY": API_KEY,
+        "ACCESS-SIGN": sign,
+        "ACCESS-TIMESTAMP": timestamp,
+        "ACCESS-PASSPHRASE": API_PASSPHRASE,
+        "Content-Type": "application/json"
+    }
+    res = requests.post(url, headers=headers, json=body)
+    print(f"\n📤 주문 전송 ({side}) {symbol} → {res.status_code}: {res.text}")
+    send_telegram(f"📤 주문 전송 ({side}) {symbol}\n응답: {res.status_code} - {res.text}")
+
+# === 지표 계산 ===
+def calculate_cci(c, period=14):
+    if len(c) < period: return None
+    tp = np.array([(float(x[2])+float(x[3])+float(x[4]))/3 for x in c[-period:]])
     ma = np.mean(tp)
     md = np.mean(np.abs(tp - ma))
-    return 0 if md == 0 else (tp[-1] - ma) / (0.015 * md)
+    return 0 if md == 0 else (tp[-1]-ma)/(0.015*md)
 
-# ADX 계산
-def calculate_adx(candles, period=5):
-    if len(candles) < period + 1:
-        return None
-    high = np.array([float(c[2]) for c in candles])
-    low = np.array([float(c[3]) for c in candles])
-    close = np.array([float(c[4]) for c in candles])
+def calculate_adx(c, period=5):
+    if len(c) < period + 1: return None
+    high = np.array([float(x[2]) for x in c])
+    low = np.array([float(x[3]) for x in c])
+    close = np.array([float(x[4]) for x in c])
     tr = np.maximum(high[1:], close[:-1]) - np.minimum(low[1:], close[:-1])
-    plus_dm = np.where((high[1:] - high[:-1]) > (low[:-1] - low[1:]),
-                       np.maximum(high[1:] - high[:-1], 0), 0)
-    minus_dm = np.where((low[:-1] - low[1:]) > (high[1:] - high[:-1]),
-                        np.maximum(low[:-1] - low[1:], 0), 0)
+    plus_dm = np.where((high[1:]-high[:-1]) > (low[:-1]-low[1:]), np.maximum(high[1:]-high[:-1], 0), 0)
+    minus_dm = np.where((low[:-1]-low[1:]) > (high[1:]-high[:-1]), np.maximum(low[:-1]-low[1:], 0), 0)
     atr = np.mean(tr[-period:])
     plus_di = 100 * (np.mean(plus_dm[-period:]) / atr) if atr != 0 else 0
     minus_di = 100 * (np.mean(minus_dm[-period:]) / atr) if atr != 0 else 0
     return abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) != 0 else 0
 
-# 메시지 처리
-def on_msg(symbol, d):
-    global candles_dict, last_completed_ts_dict
-
+# === 메시지 처리 ===
+def handle_candle(symbol, d):
     ts = int(d[0])
     candle = [ts, d[1], d[2], d[3], d[4], d[5]]
-    candles = candles_dict[symbol]
+    c = candles[symbol]
 
-    if candles and candles[-1][0] == ts:
-        candles[-1] = candle
+    if c and c[-1][0] == ts:
+        c[-1] = candle
     else:
-        candles.append(candle)
-        if len(candles) > MAX_CANDLES:
-            candles.pop(0)
+        c.append(candle)
+        if len(c) > MAX_CANDLES:
+            c.pop(0)
 
-        if len(candles) >= 20:
-            prev_candle = candles[-2]
-            prev_ts = prev_candle[0]
-            if last_completed_ts_dict[symbol] == prev_ts:
-                return
-            last_completed_ts_dict[symbol] = prev_ts
+        if len(c) >= 20:
+            prev = c[-2]
+            if last_ts[symbol] == prev[0]: return
+            last_ts[symbol] = prev[0]
+            cci = calculate_cci(c[:-1])
+            adx = calculate_adx(c[:-1])
+            print(f"\n✅ {symbol} | CCI: {cci:.2f}, ADX: {adx:.2f}")
+            send_telegram(f"✅ {symbol} | CCI(14): {cci:.2f}, ADX(5): {adx:.2f}")
+            if cci and adx and cci > 100 and adx > 25 and position[symbol] is None:
+                entry = float(prev[4])
+                position[symbol] = {'entry': entry, 'trail_active': False, 'trail_stop': None, 'max_price': entry}
+                place_order(symbol, 'open_long')
+                print(f"🚀 진입: {symbol} @ {entry}")
+                send_telegram(f"🚀 {symbol} 진입 @ {entry:.2f}")
 
-            time_str = f"{datetime.fromtimestamp(prev_ts / 1000):%Y-%m-%d %H:%M:%S}"
-            print(f"\n✅ [{symbol}] 15분봉 완성 ▶️ {time_str} | O:{prev_candle[1]} H:{prev_candle[2]} L:{prev_candle[3]} C:{prev_candle[4]}")
+# === 실시간 가격 추적 ===
+def handle_ticker(symbol, d):
+    current = float(d['last'])
+    pos = position.get(symbol)
+    if not pos: return
+    entry = pos['entry']
+    if not pos['trail_active']:
+        if current >= entry * 1.02:
+            pos['trail_active'] = True
+            pos['max_price'] = current
+            pos['trail_stop'] = current * 0.997
+            print(f"🎯 트레일링 시작: {symbol} @ {current:.2f} (스탑가 {pos['trail_stop']:.2f})")
+            send_telegram(f"🎯 {symbol} 트레일링 시작 @ {current:.2f}\n스탑가: {pos['trail_stop']:.2f}")
+    else:
+        pos['max_price'] = max(pos['max_price'], current)
+        pos['trail_stop'] = pos['max_price'] * 0.997
+        if current <= pos['trail_stop']:
+            place_order(symbol, 'close_long')
+            print(f"💥 청산: {symbol} @ {current:.2f}")
+            send_telegram(f"💥 {symbol} 청산 @ {current:.2f}")
+            position[symbol] = None
 
-            cci = calculate_cci(candles[:-1], 14)
-            adx = calculate_adx(candles[:-1], 5)
-            if cci is not None and adx is not None:
-                log = f"📊 [{symbol}] CCI(14): {cci:.2f} | ADX(5): {adx:.2f}"
-                print(log)
-                send_telegram(log)
-
-    # 실시간 출력 (원한다면 생략 가능)
-    if last_completed_ts_dict[symbol] != ts:
-        print(f"🕒 [{symbol}] {datetime.fromtimestamp(ts/1000):%Y-%m-%d %H:%M:%S} | O:{d[1]} H:{d[2]} L:{d[3]} C:{d[4]} V:{d[5]}")
-
-# WebSocket 루프
+# === WebSocket 연결 ===
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
-    try:
-        async with websockets.connect(uri, ping_interval=20, ping_timeout=30) as ws:
-            args = [{
-                "instType": INST_TYPE,
-                "channel": CHANNEL,
-                "instId": symbol
-            } for symbol in SYMBOLS]
+    async with websockets.connect(uri) as ws:
+        args = []
+        for s in SYMBOLS:
+            args.append({"instType": INST_TYPE, "channel": CANDLE_CHANNEL, "instId": s})
+            args.append({"instType": INST_TYPE, "channel": TICKER_CHANNEL, "instId": s})
+        await ws.send(json.dumps({"op": "subscribe", "args": args}))
+        print("✅ WebSocket 연결 및 구독 완료")
 
-            payload = {"op": "subscribe", "args": args}
-            print("📤 구독 요청:", json.dumps(payload))
-            await ws.send(json.dumps(payload))
-            print("✅ WebSocket 연결됨 / 15분봉 구독 시작")
-
-            while True:
-                msg = json.loads(await ws.recv())
-                if msg.get("event") == "error":
-                    print(f"❌ 에러 응답: {msg}")
-                    break
-                if msg.get("action") in ["snapshot", "update"]:
-                    data = msg.get("data", [])
-                    if not data:
-                        continue
-                    d = data[0]
-                    inst_id = msg.get("arg", {}).get("instId")
-                    if inst_id in SYMBOLS:
-                        on_msg(inst_id, d)
-    except Exception as e:
-        print(f"⚠️ WebSocket 오류: {e}")
-        print("🔁 5초 후 재시도")
-        await asyncio.sleep(5)
-        await ws_loop()
+        while True:
+            msg = json.loads(await ws.recv())
+            if 'data' not in msg: continue
+            symbol = msg['arg']['instId']
+            if msg['arg']['channel'] == CANDLE_CHANNEL:
+                handle_candle(symbol, msg['data'][0])
+            elif msg['arg']['channel'] == TICKER_CHANNEL:
+                handle_ticker(symbol, msg['data'])
 
 if __name__ == "__main__":
     asyncio.run(ws_loop())
