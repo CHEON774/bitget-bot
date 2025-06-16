@@ -39,10 +39,23 @@ def get_futures_balance():
     body = ""
     timestamp = str(int(time.time() * 1000))
     pre_hash = f"{timestamp}{method}{request_path}{body}"
+    
+    # 👉 여기에 추가
     signature = base64.b64encode(
         hmac.new(API_SECRET.encode(), pre_hash.encode(), hashlib.sha256).digest()
     ).decode()
-    
+
+    # 🔍 디버깅 출력
+    print("🧪 pre_hash:", pre_hash)
+    print("🧪 SIGN:", signature)
+    print("🧪 HEADERS:", {
+        "ACCESS-KEY": API_KEY,
+        "ACCESS-SIGN": signature,
+        "ACCESS-TIMESTAMP": timestamp,
+        "ACCESS-PASSPHRASE": API_PASSPHRASE,
+        "locale": "en-US"
+    })
+
     headers = {
         "ACCESS-KEY": API_KEY,
         "ACCESS-SIGN": signature,
@@ -50,6 +63,10 @@ def get_futures_balance():
         "ACCESS-PASSPHRASE": API_PASSPHRASE,
         "locale": "en-US"
     }
+
+    ...
+
+
     url = "https://api.bitget.com" + request_path
     try:
         res = requests.get(url, headers=headers, timeout=10)
@@ -63,6 +80,7 @@ def get_futures_balance():
             print("❗ Futures 계좌 정보 없음", flush=True)
     except Exception as e:
         print("❌ 잔액 조회 실패:", e, flush=True)
+
 
 # ✅ 주문
 def get_bitget_headers(method, path, body=''):
