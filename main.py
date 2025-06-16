@@ -2,20 +2,20 @@ import asyncio, json, websockets, requests
 from datetime import datetime
 import numpy as np
 
-# 설정 값
+# 설정값
 SYMBOL = "BTCUSDT"
-INST_TYPE = "USDT-FUTURES"  # ✅ 공식 문서에 명시된 정확한 값
+INST_TYPE = "USDT-FUTURES"  # ✅ 공식 문서 기준
 CHANNEL = "candle1m"
 MAX_CANDLES = 150
 candles = []
 
-# 텔레그램 정보 입력
-BOT_TOKEN = "7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU"
-CHAT_ID = "1797494660"
+# 텔레그램 설정
+BOT_TOKEN = "여기에_봇토큰_입력"
+CHAT_ID = "여기에_chat_id_입력"
 
-last_completed_ts = None
+last_completed_ts = None  # 마지막으로 처리한 캔들 시각
 
-# 텔레그램 메시지 전송
+# 텔레그램 메시지 전송 함수
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     try:
@@ -23,7 +23,7 @@ def send_telegram(msg):
     except Exception as e:
         print(f"⚠️ 텔레그램 전송 실패: {e}")
 
-# CCI 계산
+# CCI 계산 함수
 def calculate_cci(candles, period=14):
     if len(candles) < period:
         return None
@@ -32,7 +32,7 @@ def calculate_cci(candles, period=14):
     md = np.mean(np.abs(tp - ma))
     return 0 if md == 0 else (tp[-1] - ma) / (0.015 * md)
 
-# ADX 계산
+# ADX 계산 함수
 def calculate_adx(candles, period=5):
     if len(candles) < period + 1:
         return None
@@ -49,14 +49,14 @@ def calculate_adx(candles, period=5):
     minus_di = 100 * (np.mean(minus_dm[-period:]) / atr) if atr != 0 else 0
     return abs(plus_di - minus_di) / (plus_di + minus_di) * 100 if (plus_di + minus_di) != 0 else 0
 
-# WebSocket 메시지 수신 시 처리
+# WebSocket 수신 처리
 def on_msg(msg):
     global last_completed_ts
     d = msg["data"][0]
     ts = int(d[0])
-    print(f"\n🕒 {datetime.fromtimestamp(ts/1000):%Y-%m-%d %H:%M:%S} | O:{d[1]} H:{d[2]} L:{d[3]} C:{d[4]} V:{d[5]}")
     candle = [ts, d[1], d[2], d[3], d[4], d[5]]
 
+    # 최신 캔들 업데이트
     if candles and candles[-1][0] == ts:
         candles[-1] = candle
     else:
@@ -64,25 +64,30 @@ def on_msg(msg):
         if len(candles) > MAX_CANDLES:
             candles.pop(0)
 
-    if len(candles) >= 20:
-        prev_candle = candles[-2]
-        prev_ts = prev_candle[0]
-        if last_completed_ts == prev_ts:
-            return
-        last_completed_ts = prev_ts
+        # 캔들 완성 시점 (이전 캔들)
+        if len(candles) >= 20:
+            prev_candle = candles[-2]
+            prev_ts = prev_candle[0]
+            if last_completed_ts == prev_ts:
+                return  # 중복 방지
+            last_completed_ts = prev_ts
 
-        time_str = f"{datetime.fromtimestamp(prev_ts / 1000):%Y-%m-%d %H:%M:%S}"
-        print(f"✅ 완성된 캔들 ▶️ {time_str} | O:{prev_candle[1]} H:{prev_candle[2]} L:{prev_candle[3]} C:{prev_candle[4]}")
+            # 출력 및 지표 계산
+            time_str = f"{datetime.fromtimestamp(prev_ts / 1000):%Y-%m-%d %H:%M:%S}"
+            print(f"\n✅ 완성된 캔들 ▶️ {time_str} | O:{prev_candle[1]} H:{prev_candle[2]} L:{prev_candle[3]} C:{prev_candle[4]}")
 
-        cci = calculate_cci(candles[:-1], 14)
-        adx = calculate_adx(candles[:-1], 5)
+            cci = calculate_cci(candles[:-1], 14)
+            adx = calculate_adx(candles[:-1], 5)
 
-        if cci is not None and adx is not None:
-            log = f"📊 CCI(14): {cci:.2f} | ADX(5): {adx:.2f}"
-            print(log)
-            send_telegram(log)
+            if cci is not None and adx is not None:
+                log = f"📊 CCI(14): {cci:.2f} | ADX(5): {adx:.2f}"
+                print(log)
+                send_telegram(log)
 
-# WebSocket 연결 루프
+    # 실시간 업데이트 로그 (선택적으로 출력 가능)
+    print(f"🕒 {datetime.fromtimestamp(ts/1000):%Y-%m-%d %H:%M:%S} | O:{d[1]} H:{d[2]} L:{d[3]} C:{d[4]} V:{d[5]}")
+
+# WebSocket 루프
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
     while True:
@@ -91,9 +96,9 @@ async def ws_loop():
                 payload = {
                     "op": "subscribe",
                     "args": [{
-                        "instType": INST_TYPE,   # "USDT-FUTURES"
-                        "channel": CHANNEL,      # "candle1m"
-                        "instId": SYMBOL         # "BTCUSDT"
+                        "instType": INST_TYPE,
+                        "channel": CHANNEL,
+                        "instId": SYMBOL
                     }]
                 }
                 print("📤 전송 메시지:", json.dumps(payload))
