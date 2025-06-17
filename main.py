@@ -69,6 +69,9 @@ def get_account_balance():
         if data.get("code") == "00000":
             futures_balance = next((item["usdtBalance"] for item in data["data"] if item["accountType"] == "futures"), None)
             print(f"✅ 선물 계정 잔액: {futures_balance} USDT", flush=True)
+
+            # ✅ 텔레그램 알림 추가
+            send_telegram(f"📊 Bitget 선물 계정 잔액: {futures_balance} USDT")
         else:
             print("❌ 잔액 조회 실패: 응답 코드 오류", data, flush=True)
     except requests.exceptions.RequestException as e:
@@ -139,26 +142,37 @@ def handle_candle(symbol, data):
         if len(store) < 20:
             return
 
-        if entry_prices.get(symbol) and trailing_active.get(symbol):
-            entry = entry_prices[symbol]
-            pnl = (float(c) - entry) / entry * 100 if positions[symbol] == 'long' else (entry - float(c)) / entry * 100
-            if pnl >= 2:
-                trailing_active[symbol] = float(c)
-            elif trailing_active[symbol] and (
-                (positions[symbol] == 'long' and float(c) < trailing_active[symbol] * 0.997) or
-                (positions[symbol] == 'short' and float(c) > trailing_active[symbol] * 1.003)):
-                send_telegram(f"💰 {symbol} 차징! 수익률: {pnl:.2f}%")
-                place_order(symbol, 'close_long' if positions[symbol] == 'long' else 'close_short', SYMBOLS[symbol]['amount'])
-                if pnl < 0:
-                    consecutive_losses[symbol] += 1
-                    if consecutive_losses[symbol] >= 3:
-                        auto_trading_enabled[symbol] = False
-                        send_telegram(f"⚠️ {symbol} 3연속 손실로 자동매번 중지됨")
-                else:
-                    consecutive_losses[symbol] = 0
-                positions[symbol] = None
-                entry_prices[symbol] = None
-                trailing_active[symbol] = None
+  if entry_prices.get(symbol) and positions.get(symbol):
+    entry = entry_prices[symbol]
+    pnl = (float(c) - entry) / entry * 100 if positions[symbol] == 'long' else (entry - float(c)) / entry * 100
+
+    # 수익률 2% 이상 도달 시 → 최고가 추적 시작
+    if pnl >= 2:
+        if not trailing_active[symbol]:
+            trailing_active[symbol] = float(c)
+        else:
+            trailing_active[symbol] = max(trailing_active[symbol], float(c))  # 최고가 갱신
+
+    # 최고가 대비 0.5% 이탈하면 청산
+    if trailing_active[symbol] and (
+        (positions[symbol] == 'long' and float(c) < trailing_active[symbol] * 0.995) or
+        (positions[symbol] == 'short' and float(c) > trailing_active[symbol] * 1.005)
+    ):
+        send_telegram(f"💰 {symbol} 트레일링 스탑 청산! 수익률: {pnl:.2f}%")
+        place_order(symbol, 'close_long' if positions[symbol] == 'long' else 'close_short', SYMBOLS[symbol]['amount'])
+
+        if pnl < 0:
+            consecutive_losses[symbol] += 1
+            if consecutive_losses[symbol] >= 3:
+                auto_trading_enabled[symbol] = False
+                send_telegram(f"⚠️ {symbol} 3연속 손실로 자동매매 중지됨")
+        else:
+            consecutive_losses[symbol] = 0
+
+        positions[symbol] = None
+        entry_prices[symbol] = None
+        trailing_active[symbol] = None
+
 
         cci = calculate_cci(store[:-1], 14)
         adx = calculate_adx(store[:-1], 5)
