@@ -65,9 +65,14 @@ def get_account_balance():
     try:
         res = requests.get(url, headers=headers)
         res.raise_for_status()
-        print("✅ 잔액 조회 성공:", res.json())
+        data = res.json()
+        if data.get("code") == "00000":
+            futures_balance = next((item["usdtBalance"] for item in data["data"] if item["accountType"] == "futures"), None)
+            print(f"✅ 선물 계정 잔액: {futures_balance} USDT", flush=True)
+        else:
+            print("❌ 잔액 조회 실패: 응답 코드 오류", data, flush=True)
     except requests.exceptions.RequestException as e:
-        print("❌ 잔액 조회 실패:", e)
+        print("❌ 잔액 조회 실패:", e, flush=True)
 
 def place_order(symbol, side, amount):
     path = '/api/mix/v1/order/place'
@@ -178,25 +183,41 @@ async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
     while True:
         try:
-            async with websockets.connect(uri, ping_interval=10, ping_timeout=5, close_timeout=3) as ws:
+            async with websockets.connect(uri, ping_interval=20) as ws:  # ping_timeout 제거
                 args = [{"instType": INST_TYPE, "channel": CHANNEL, "instId": symbol} for symbol in SYMBOLS.keys()]
                 await ws.send(json.dumps({"op": "subscribe", "args": args}))
-                print("✅ WebSocket 연결 및 구독 완료", flush=True)
+                print("✅ WebSocket 연결 및 구독 시도 완료", flush=True)
 
                 while True:
                     try:
                         msg = json.loads(await ws.recv())
-                        if msg.get("action") in ["snapshot", "update"] and "arg" in msg:
-                            symbol = msg["arg"]["instId"]
-                            if symbol in SYMBOLS:
-                                handle_candle(symbol, msg["data"][0])
+
+                        # 에러 메시지 출력
+                        if msg.get("event") == "error":
+                            print(f"❌ 에러 응답: {msg}", flush=True)
+                            break  # 재연결 시도
+
+                        # snapshot 또는 update인 경우만 처리
+                        if msg.get("action") in ("snapshot", "update"):
+                            try:
+                                symbol = msg["arg"]["instId"]
+                                data = msg["data"][0]
+                                if symbol in SYMBOLS:
+                                    handle_candle(symbol, data)
+                            except Exception as e:
+                                print(f"⚠️ handle_candle 처리 오류: {e}", flush=True)
+                                continue
+
                     except Exception as e:
                         print(f"⚠️ 메시지 처리 오류: {e}", flush=True)
-                        break
-        except (ConnectionClosedError, Exception) as e:
-            print(f"❌ WebSocket 연결 오류: {e}", flush=True)
-        print("🔁 5초 후 재연결 시도...", flush=True)
+                        break  # 내부 루프 탈출 → 외부 루프에서 재연결
+
+        except Exception as e:
+            print(f"❗ WebSocket 연결 실패: {e}", flush=True)
+
+        print("🔁 5초 후 재연결 시도...\n", flush=True)
         await asyncio.sleep(5)
+
 
 if __name__ == "__main__":
     get_account_balance()
