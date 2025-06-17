@@ -18,7 +18,7 @@ SYMBOLS = {
     "ETHUSDT": {"leverage": 7, "amount": 120}
 }
 CHANNEL = "candle15m"
-INST_TYPE = "UMCBL"
+INST_TYPE = "USDT-FUTURES"
 MAX_CANDLES = 150
 candles = {symbol: [] for symbol in SYMBOLS.keys()}
 positions = {}
@@ -84,7 +84,7 @@ def place_order(symbol, side, amount):
         "side": side,
         "orderType": "market",
         "tradeSide": side,
-        "productType": "UMCBL"
+        "productType": "USDT-FUTURES"
     }
     headers = get_bitget_headers('POST', path, json.dumps(data))
     try:
@@ -183,8 +183,13 @@ async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
     while True:
         try:
-            async with websockets.connect(uri, ping_interval=20) as ws:  # ping_timeout 제거
-                args = [{"instType": INST_TYPE, "channel": CHANNEL, "instId": symbol} for symbol in SYMBOLS.keys()]
+            async with websockets.connect(uri, ping_interval=20) as ws:
+                args = [{
+                    "instType": INST_TYPE,     # ✅ 여기 수정됨
+                    "channel": CHANNEL,
+                    "instId": symbol
+                } for symbol in SYMBOLS.keys()]
+                
                 await ws.send(json.dumps({"op": "subscribe", "args": args}))
                 print("✅ WebSocket 연결 및 구독 시도 완료", flush=True)
 
@@ -192,12 +197,10 @@ async def ws_loop():
                     try:
                         msg = json.loads(await ws.recv())
 
-                        # 에러 메시지 출력
                         if msg.get("event") == "error":
                             print(f"❌ 에러 응답: {msg}", flush=True)
-                            break  # 재연결 시도
+                            break
 
-                        # snapshot 또는 update인 경우만 처리
                         if msg.get("action") in ("snapshot", "update"):
                             try:
                                 symbol = msg["arg"]["instId"]
@@ -210,7 +213,7 @@ async def ws_loop():
 
                     except Exception as e:
                         print(f"⚠️ 메시지 처리 오류: {e}", flush=True)
-                        break  # 내부 루프 탈출 → 외부 루프에서 재연결
+                        break
 
         except Exception as e:
             print(f"❗ WebSocket 연결 실패: {e}", flush=True)
