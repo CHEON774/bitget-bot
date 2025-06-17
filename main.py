@@ -89,7 +89,7 @@ def get_account_balance(send=False):
     return None
 
 # 텔레그램 Webhook 처리
-@app.route('/', methods=['POST'])
+@app.route('/webhook', methods=['POST'])
 def telegram_webhook():
     data = request.get_json()
     if 'message' in data and 'text' in data['message']:
