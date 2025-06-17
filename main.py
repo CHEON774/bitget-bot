@@ -1,19 +1,15 @@
-
 import asyncio, json, websockets, requests, hmac, hashlib, time, base64
 from datetime import datetime
 import numpy as np
 from websockets.exceptions import ConnectionClosedError
 
-# Bitget API 인증 정보
 API_KEY = 'bg_a9c07aa3168e846bfaa713fe9af79d14'
 API_SECRET = '5be628fd41dce5eff78a607f31d096a4911d4e2156b6d66a14be20f027068043'
 API_PASSPHRASE = '1q2w3e4r'
 
-# 텔레그램 알림 설정
 TELEGRAM_TOKEN = '7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU'
 TELEGRAM_CHAT_ID = '1797494660'
 
-# 거래 설정
 SYMBOLS = {
     "BTCUSDT": {"leverage": 10, "amount": 150},
     "ETHUSDT": {"leverage": 7, "amount": 120}
@@ -54,9 +50,6 @@ def get_bitget_headers(method, path, body=''):
         'ACCESS-PASSPHRASE': API_PASSPHRASE,
         'locale': 'en-US'
     }
-    print("\n🧪 pre_hash:", pre_hash)
-    print("🧪 SIGN:", signature)
-    print("🧪 HEADERS:", headers)
     return headers
 
 def get_account_balance():
@@ -146,17 +139,17 @@ def handle_candle(symbol, data):
             pnl = (float(c) - entry) / entry * 100 if positions[symbol] == 'long' else (entry - float(c)) / entry * 100
 
             if pnl >= 2:
-                if not trailing_active.get(symbol):
+                if not trailing_active[symbol]:
                     trailing_active[symbol] = float(c)
                 else:
                     trailing_active[symbol] = max(trailing_active[symbol], float(c))
 
-            if trailing_active.get(symbol) and (
+            if trailing_active[symbol] and (
                 (positions[symbol] == 'long' and float(c) < trailing_active[symbol] * 0.995) or
-                (positions[symbol] == 'short' and float(c) > trailing_active[symbol] * 1.005)
-            ):
+                (positions[symbol] == 'short' and float(c) > trailing_active[symbol] * 1.005)):
                 send_telegram(f"💰 {symbol} 트레일링 스탑 청산! 수익률: {pnl:.2f}%")
                 place_order(symbol, 'close_long' if positions[symbol] == 'long' else 'close_short', SYMBOLS[symbol]['amount'])
+                get_account_balance()
 
                 if pnl < 0:
                     consecutive_losses[symbol] += 1
@@ -177,16 +170,18 @@ def handle_candle(symbol, data):
 
         if adx > 25:
             if cci > 100 and positions.get(symbol) != 'long':
+                send_telegram(f"📈 {symbol} 롱 진입 조건 충족! (CCI={cci:.2f}, ADX={adx:.2f})")
                 positions[symbol] = 'long'
                 entry_prices[symbol] = float(c)
                 trailing_active[symbol] = None
-                send_telegram(f"🚀 {symbol} 로우 진입 @ {c}")
+                send_telegram(f"🚀 {symbol} 롱 진입 @ {c}")
                 place_order(symbol, 'open_long', SYMBOLS[symbol]['amount'])
             elif cci < -100 and positions.get(symbol) != 'short':
+                send_telegram(f"📉 {symbol} 숏 진입 조건 충족! (CCI={cci:.2f}, ADX={adx:.2f})")
                 positions[symbol] = 'short'
                 entry_prices[symbol] = float(c)
                 trailing_active[symbol] = None
-                send_telegram(f"🔻 {symbol} 슈스 진입 @ {c}")
+                send_telegram(f"🔻 {symbol} 숏 진입 @ {c}")
                 place_order(symbol, 'open_short', SYMBOLS[symbol]['amount'])
 
 async def ws_loop():
@@ -199,15 +194,18 @@ async def ws_loop():
                     "channel": CHANNEL,
                     "instId": symbol
                 } for symbol in SYMBOLS.keys()]
+
                 await ws.send(json.dumps({"op": "subscribe", "args": args}))
                 print("✅ WebSocket 연결 및 구독 시도 완료", flush=True)
 
                 while True:
                     try:
                         msg = json.loads(await ws.recv())
+
                         if msg.get("event") == "error":
                             print(f"❌ 에러 응답: {msg}", flush=True)
                             break
+
                         if msg.get("action") in ("snapshot", "update"):
                             try:
                                 symbol = msg["arg"]["instId"]
@@ -217,11 +215,14 @@ async def ws_loop():
                             except Exception as e:
                                 print(f"⚠️ handle_candle 처리 오류: {e}", flush=True)
                                 continue
+
                     except Exception as e:
                         print(f"⚠️ 메시지 처리 오류: {e}", flush=True)
                         break
+
         except Exception as e:
             print(f"❗ WebSocket 연결 실패: {e}", flush=True)
+
         print("🔁 5초 후 재연결 시도...\n", flush=True)
         await asyncio.sleep(5)
 
