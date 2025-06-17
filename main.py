@@ -8,7 +8,7 @@ app = Flask(__name__)
 
 # Bitget API 인증 정보
 API_KEY = 'bg_a9c07aa3168e846bfaa713fe9af79d14'
-API_SECRET = '5be628043'
+API_SECRET = '5be628fd41dce5eff78a607f31d096a4911d4e2156b6d66a14be20f027068043'
 API_PASSPHRASE = '1q2w3e4r'
 
 # 텔레그램 설정
