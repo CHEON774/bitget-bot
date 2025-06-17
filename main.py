@@ -1,3 +1,4 @@
+
 import asyncio, json, websockets, requests, hmac, hashlib, time, base64
 from datetime import datetime
 import numpy as np
@@ -5,7 +6,7 @@ from websockets.exceptions import ConnectionClosedError
 
 # Bitget API 인증 정보
 API_KEY = 'bg_a9c07aa3168e846bfaa713fe9af79d14'
-API_SECRET = '5be628fd41dce5eff78a607f31d096a4911d4e2156b6d66a14be20f027068043'
+API_SECRET = '5be628043'
 API_PASSPHRASE = '1q2w3e4r'
 
 # 텔레그램 알림 설정
@@ -69,8 +70,6 @@ def get_account_balance():
         if data.get("code") == "00000":
             futures_balance = next((item["usdtBalance"] for item in data["data"] if item["accountType"] == "futures"), None)
             print(f"✅ 선물 계정 잔액: {futures_balance} USDT", flush=True)
-
-            # ✅ 텔레그램 알림 추가
             send_telegram(f"📊 Bitget 선물 계정 잔액: {futures_balance} USDT")
         else:
             print("❌ 잔액 조회 실패: 응답 코드 오류", data, flush=True)
@@ -142,37 +141,34 @@ def handle_candle(symbol, data):
         if len(store) < 20:
             return
 
-  if entry_prices.get(symbol) and positions.get(symbol):
-    entry = entry_prices[symbol]
-    pnl = (float(c) - entry) / entry * 100 if positions[symbol] == 'long' else (entry - float(c)) / entry * 100
+        if entry_prices.get(symbol) and positions.get(symbol):
+            entry = entry_prices[symbol]
+            pnl = (float(c) - entry) / entry * 100 if positions[symbol] == 'long' else (entry - float(c)) / entry * 100
 
-    # 수익률 2% 이상 도달 시 → 최고가 추적 시작
-    if pnl >= 2:
-        if not trailing_active[symbol]:
-            trailing_active[symbol] = float(c)
-        else:
-            trailing_active[symbol] = max(trailing_active[symbol], float(c))  # 최고가 갱신
+            if pnl >= 2:
+                if not trailing_active.get(symbol):
+                    trailing_active[symbol] = float(c)
+                else:
+                    trailing_active[symbol] = max(trailing_active[symbol], float(c))
 
-    # 최고가 대비 0.5% 이탈하면 청산
-    if trailing_active[symbol] and (
-        (positions[symbol] == 'long' and float(c) < trailing_active[symbol] * 0.995) or
-        (positions[symbol] == 'short' and float(c) > trailing_active[symbol] * 1.005)
-    ):
-        send_telegram(f"💰 {symbol} 트레일링 스탑 청산! 수익률: {pnl:.2f}%")
-        place_order(symbol, 'close_long' if positions[symbol] == 'long' else 'close_short', SYMBOLS[symbol]['amount'])
+            if trailing_active.get(symbol) and (
+                (positions[symbol] == 'long' and float(c) < trailing_active[symbol] * 0.995) or
+                (positions[symbol] == 'short' and float(c) > trailing_active[symbol] * 1.005)
+            ):
+                send_telegram(f"💰 {symbol} 트레일링 스탑 청산! 수익률: {pnl:.2f}%")
+                place_order(symbol, 'close_long' if positions[symbol] == 'long' else 'close_short', SYMBOLS[symbol]['amount'])
 
-        if pnl < 0:
-            consecutive_losses[symbol] += 1
-            if consecutive_losses[symbol] >= 3:
-                auto_trading_enabled[symbol] = False
-                send_telegram(f"⚠️ {symbol} 3연속 손실로 자동매매 중지됨")
-        else:
-            consecutive_losses[symbol] = 0
+                if pnl < 0:
+                    consecutive_losses[symbol] += 1
+                    if consecutive_losses[symbol] >= 3:
+                        auto_trading_enabled[symbol] = False
+                        send_telegram(f"⚠️ {symbol} 3연속 손실로 자동매매 중지됨")
+                else:
+                    consecutive_losses[symbol] = 0
 
-        positions[symbol] = None
-        entry_prices[symbol] = None
-        trailing_active[symbol] = None
-
+                positions[symbol] = None
+                entry_prices[symbol] = None
+                trailing_active[symbol] = None
 
         cci = calculate_cci(store[:-1], 14)
         adx = calculate_adx(store[:-1], 5)
@@ -199,22 +195,19 @@ async def ws_loop():
         try:
             async with websockets.connect(uri, ping_interval=20) as ws:
                 args = [{
-                    "instType": INST_TYPE,     # ✅ 여기 수정됨
+                    "instType": INST_TYPE,
                     "channel": CHANNEL,
                     "instId": symbol
                 } for symbol in SYMBOLS.keys()]
-                
                 await ws.send(json.dumps({"op": "subscribe", "args": args}))
                 print("✅ WebSocket 연결 및 구독 시도 완료", flush=True)
 
                 while True:
                     try:
                         msg = json.loads(await ws.recv())
-
                         if msg.get("event") == "error":
                             print(f"❌ 에러 응답: {msg}", flush=True)
                             break
-
                         if msg.get("action") in ("snapshot", "update"):
                             try:
                                 symbol = msg["arg"]["instId"]
@@ -224,19 +217,14 @@ async def ws_loop():
                             except Exception as e:
                                 print(f"⚠️ handle_candle 처리 오류: {e}", flush=True)
                                 continue
-
                     except Exception as e:
                         print(f"⚠️ 메시지 처리 오류: {e}", flush=True)
                         break
-
         except Exception as e:
             print(f"❗ WebSocket 연결 실패: {e}", flush=True)
-
         print("🔁 5초 후 재연결 시도...\n", flush=True)
         await asyncio.sleep(5)
-
 
 if __name__ == "__main__":
     get_account_balance()
     asyncio.run(ws_loop())
-
