@@ -33,16 +33,10 @@ consecutive_losses = {symbol: 0 for symbol in SYMBOLS}
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        requests.post(
-            url,
-            data={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": message.encode("utf-16", "surrogatepass").decode("utf-16")
-            }
-        )
+        safe_message = message.encode("utf-16", "surrogatepass").decode("utf-16")
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": safe_message})
     except Exception as e:
         print("❌ 텔레그램 전송 실패:", e)
-
 
 def sign(message, secret):
     return base64.b64encode(hmac.new(secret.encode(), message.encode(), hashlib.sha256).digest()).decode()
@@ -62,6 +56,16 @@ def get_bitget_headers(method, path, body=''):
         'locale': 'en-US'
     }
 
+def get_price(symbol):
+    url = f"https://api.bitget.com/api/mix/v1/market/ticker?symbol={symbol}&productType=USDT-FUTURES"
+    try:
+        res = requests.get(url)
+        data = res.json()
+        if data.get("code") == "00000" and "data" in data:
+            return float(data["data"].get("last", 0))
+    except:
+        return None
+
 def get_account_balance(send=False):
     path = "/api/v2/account/all-account-balance"
     url = f"https://api.bitget.com{path}"
@@ -72,7 +76,7 @@ def get_account_balance(send=False):
         if data.get("code") == "00000":
             balance = float(next((item["usdtBalance"] for item in data["data"] if item["accountType"] == "futures"), 0))
             if send:
-                send_telegram(f"\ud83d\udcca 현재 선물 계정 잔액: {balance:.2f} USDT")
+                send_telegram(f"📊 현재 선물 계정 잔액: {balance:.2f} USDT")
             return balance
     except:
         return None
@@ -100,24 +104,14 @@ def calculate_adx(candles):
     dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
     return np.mean(dx[-5:]) if len(dx) >= 5 else 0
 
-def get_price(symbol):
-    url = f"https://api.bitget.com/api/mix/v1/market/ticker?symbol={symbol}&productType=USDT-FUTURES"
-    try:
-        res = requests.get(url)
-        data = res.json()
-        if data.get("code") == "00000" and "data" in data:
-            return float(data["data"].get("last", 0))
-    except:
-        return None
-
 def open_position(symbol, side):
     if positions[symbol] != 0:
         return
+    path = "/api/mix/v1/order/place"
+    url = f"https://api.bitget.com{path}"
     price = get_price(symbol)
     if not price:
         return
-    path = "/api/mix/v1/order/place"
-    url = f"https://api.bitget.com{path}"
     size = round(SYMBOLS[symbol]["amount"] * SYMBOLS[symbol]["leverage"] / price, 3)
     body = json.dumps({
         "symbol": symbol,
@@ -135,8 +129,8 @@ def open_position(symbol, side):
         entry_prices[symbol] = price
         trailing_highs[symbol] = price
         trailing_active[symbol] = False
-        send_telegram(f"\u2705 {symbol} {side.upper()} 진입! 진입가: {price:.2f}")
-
+        send_telegram(f"✅ {symbol} {side.upper()} 진입! 진입가: {price:.2f}")
+    return
 
 def check_exit(symbol):
     price = get_price(symbol)
@@ -145,26 +139,25 @@ def check_exit(symbol):
     entry = entry_prices[symbol]
     change = (price - entry) / entry * 100 if positions[symbol] > 0 else (entry - price) / entry * 100
     if change <= -2:
-        send_telegram(f"\ud83d\udd3b {symbol} 손절 -2% 실행: {price:.2f}")
+        send_telegram(f"🔻 {symbol} 손절 -2% 실행: {price:.2f}")
         positions[symbol] = 0
         consecutive_losses[symbol] += 1
         if consecutive_losses[symbol] >= 3:
             auto_trading_enabled[symbol] = False
-            send_telegram(f"\u26d4 {symbol} 연속 손절 3회 → 자동매매 중단")
+            send_telegram(f"⛔ {symbol} 연속 손절 3회 → 자동매매 중단")
     elif change >= 3:
         trailing_active[symbol] = True
     if trailing_active[symbol]:
         if positions[symbol] > 0:
             trailing_highs[symbol] = max(trailing_highs[symbol], price)
             if price <= trailing_highs[symbol] * 0.995:
-                send_telegram(f"\ud83d\udcc9 {symbol} 트레일링 청산: {price:.2f}")
+                send_telegram(f"📉 {symbol} 트레일링 청산: {price:.2f}")
                 positions[symbol] = 0
         else:
             trailing_highs[symbol] = min(trailing_highs[symbol], price)
             if price >= trailing_highs[symbol] * 1.005:
-                send_telegram(f"\ud83d\udcc8 {symbol} 트레일링 청산: {price:.2f}")
+                send_telegram(f"📈 {symbol} 트레일링 청산: {price:.2f}")
                 positions[symbol] = 0
-
 
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
@@ -202,40 +195,40 @@ def start_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-@app.route('/\ud14c\ub808\uadf8\ub7a8', methods=['POST'])
+@app.route('/텔레그램', methods=['POST'])
 def telegram_webhook():
     data = request.json
     msg = data.get("message", {})
     text = msg.get("text", "")
     if not text:
         return "no message", 200
-    if "\uc2dc\uc791" in text:
+    if "시작" in text:
         for s in auto_trading_enabled:
             auto_trading_enabled[s] = True
-        send_telegram("\u2705 \uc790\ub3d9\ub9e4\ub9e4 \uc2dc\uc791!")
-    elif "\uc911\uc9c0" in text:
+        send_telegram("✅ 자동매매 시작!")
+    elif "중지" in text:
         for s in auto_trading_enabled:
             auto_trading_enabled[s] = False
-        send_telegram("\ud83d\uded1 \uc790\ub3d9\ub9e4\ub9e4 \uc911\ub2e8!")
-    elif "\uc0c1\ud638" in text or "\uc0c1\ud0dc" in text:
+        send_telegram("🛑 자동매매 중단!")
+    elif "상태" in text:
         status = [f"{s}: {'ON' if auto_trading_enabled[s] else 'OFF'}" for s in SYMBOLS]
-        send_telegram("\ud83d\udcc8 \ub9e4\ub9e4 \uc0c1\ud0dc:\n" + "\n".join(status))
-    elif "\uc218\uc775\b960" in text:
+        send_telegram("📈 매매 상태:\n" + "\n".join(status))
+    elif "수익률" in text:
         bal = get_account_balance()
         if bal:
             rate = ((bal - INITIAL_BALANCE) / INITIAL_BALANCE) * 100
-            send_telegram(f"\ud83d\udcb0 \uc218\uc775\b960: {rate:.2f}%")
-    elif "\ud3ec\uc9c0\uc158" in text:
+            send_telegram(f"💰 수익률: {rate:.2f}%")
+    elif "포지션" in text:
         for s in SYMBOLS:
             if positions[s] != 0:
-                send_telegram(f"\ud83d\udccc {s} {'\ub871' if positions[s] > 0 else '\uc259'} | \uc9c4\uc785\uac00: {entry_prices[s]:.2f}")
+                send_telegram(f"📌 {s} {'롱' if positions[s] > 0 else '숏'} | 진입가: {entry_prices[s]:.2f}")
             else:
-                send_telegram(f"\ud83d\udccc {s} \ud3ec\uc9c0\uc158 \uc5c6\uc74c")
+                send_telegram(f"📌 {s} 포지션 없음")
     return "ok", 200
 
 if __name__ == '__main__':
-    threading.Thread(target=start_ws).start()
-    time.sleep(1)
+    send_telegram("✅ 봇 정상시작 완료! 잔액 확인 중...")
     get_account_balance(send=True)
+    threading.Thread(target=start_ws).start()
     start_flask()
 
