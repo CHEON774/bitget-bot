@@ -98,4 +98,11 @@ def handle_new_candle(symbol, candle):
     except Exception as e:
         print(f"❌ 캔들 처리 오류({symbol}): {e}")
 
+if __name__ == '__main__':
+    loop = asyncio.get_event_loop()
+    loop.create_task(ws_loop())
+    loop.create_task(periodic_alert())
+    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=3000)).start()
+    loop.run_forever()
+
 # 👉 다음 응답에서: 자동매매 로직 (진입/청산), 트레일링 스탑, 알림 로직 이어짐
