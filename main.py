@@ -20,21 +20,18 @@ SYMBOLS = {
 
 INST_TYPE = "USDT-FUTURES"
 CHANNEL = "candle15m"
-MAX_CANDLES = 150
-INITIAL_BALANCE = 756
-
 candles = {symbol: [] for symbol in SYMBOLS}
-positions = {symbol: None for symbol in SYMBOLS}
-entry_prices = {}
-trailing_active = {}
+positions = {symbol: None for symbol in SYMBOLS}  # long/short/None
+entry_prices = {symbol: None for symbol in SYMBOLS}
+trailing_active = {symbol: False for symbol in SYMBOLS}
 auto_trading = {symbol: True for symbol in SYMBOLS}
 consecutive_losses = {symbol: 0 for symbol in SYMBOLS}
 
 
-def send_telegram(message):
+def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message})
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
     except Exception as e:
         print("❌ 텔레그램 전송 실패:", e)
 
@@ -63,12 +60,10 @@ def get_headers(method, path, body=''):
 def get_price(symbol):
     url = f"https://api.bitget.com/api/mix/v1/market/ticker?symbol={symbol}_UMCBL"
     try:
-        res = requests.get(url)
-        data = res.json()
-        if data.get("code") == "00000" and "data" in data:
-            return float(data["data"].get("last", 0))
+        res = requests.get(url).json()
+        return float(res["data"]["last"])
     except:
-        return None
+        return 0
 
 
 def calculate_cci(data, period=14):
@@ -121,7 +116,7 @@ def place_market_order(symbol, direction):
     data = {
         "symbol": f"{symbol}_UMCBL",
         "marginCoin": "USDT",
-        "size": str(SYMBOLS[symbol]["amount"] / price),
+        "size": str(round(SYMBOLS[symbol]["amount"] / price, 4)),
         "side": side,
         "orderType": "market",
         "force": "gtc"
@@ -138,4 +133,131 @@ def place_market_order(symbol, direction):
         print(f"진입 실패: {symbol} - {e}")
 
 
-# 이하 청산 로직 등 유지...
+def check_exit(symbol, price):
+    if positions[symbol] is None:
+        return
+    entry = entry_prices[symbol]
+    direction = positions[symbol]
+    profit = ((price - entry) / entry * 100) if direction == "long" else ((entry - price) / entry * 100)
+
+    if not trailing_active[symbol] and profit >= 3:
+        trailing_active[symbol] = True
+        send_telegram(f"⚡ {symbol} 트레일링 시작 (+3%)")
+
+    if trailing_active[symbol]:
+        max_price = max(entry, price) if direction == "long" else min(entry, price)
+        threshold = max_price * (0.995 if direction == "long" else 1.005)
+        if (direction == "long" and price < threshold) or (direction == "short" and price > threshold):
+            side = "close_long" if direction == "long" else "close_short"
+            path = "/api/mix/v1/order/place"
+            url = f"https://api.bitget.com{path}"
+            data = {
+                "symbol": f"{symbol}_UMCBL",
+                "marginCoin": "USDT",
+                "size": str(round(SYMBOLS[symbol]["amount"] / entry, 4)),
+                "side": side,
+                "orderType": "market",
+                "force": "gtc"
+            }
+            headers = get_headers("POST", path, json.dumps(data))
+            requests.post(url, headers=headers, data=json.dumps(data))
+            send_telegram(f"❌ {symbol} 청산 @ {price} / 수익률: {profit:.2f}%")
+            positions[symbol] = None
+            if profit < 0:
+                consecutive_losses[symbol] += 1
+                if consecutive_losses[symbol] >= 3:
+                    auto_trading[symbol] = False
+                    send_telegram(f"⚠️ {symbol} 연속 손절 3회로 자동매매 중단")
+
+    elif profit <= -2:
+        side = "close_long" if direction == "long" else "close_short"
+        path = "/api/mix/v1/order/place"
+        url = f"https://api.bitget.com{path}"
+        data = {
+            "symbol": f"{symbol}_UMCBL",
+            "marginCoin": "USDT",
+            "size": str(round(SYMBOLS[symbol]["amount"] / entry, 4)),
+            "side": side,
+            "orderType": "market",
+            "force": "gtc"
+        }
+        headers = get_headers("POST", path, json.dumps(data))
+        requests.post(url, headers=headers, data=json.dumps(data))
+        send_telegram(f"🛑 {symbol} 손절 -2% 청산 @ {price}")
+        positions[symbol] = None
+        consecutive_losses[symbol] += 1
+        if consecutive_losses[symbol] >= 3:
+            auto_trading[symbol] = False
+            send_telegram(f"⚠️ {symbol} 연속 손절 3회로 자동매매 중단")
+
+
+async def ws_loop():
+    uri = "wss://ws.bitget.com/v2/ws/public"
+    async with websockets.connect(uri, ping_interval=20) as ws:
+        await ws.send(json.dumps({"op": "subscribe", "args": [
+            {"instType": INST_TYPE, "channel": CHANNEL, "instId": f"{symbol}"} for symbol in SYMBOLS
+        ]}))
+        send_telegram(f"✅ WebSocket 연결됨 / candle15m 구독 완료")
+        while True:
+            try:
+                msg = json.loads(await ws.recv())
+                if msg.get("action") != "update": continue
+                d = msg["data"][0]
+                symbol = msg["arg"]["instId"]
+                candles[symbol].append(d)
+                if len(candles[symbol]) > 150:
+                    candles[symbol] = candles[symbol][-150:]
+
+                price = float(d[4])
+
+                if positions[symbol] is None and auto_trading[symbol]:
+                    direction = determine_direction(symbol)
+                    if direction:
+                        place_market_order(symbol, direction)
+                elif positions[symbol]:
+                    check_exit(symbol, price)
+
+            except ConnectionClosedError:
+                print("🔄 WebSocket 재연결 중...")
+                break
+            except Exception as e:
+                print("에러:", e)
+                continue
+
+
+@app.route('/텔레그램', methods=['POST'])
+def telegram_webhook():
+    try:
+        msg = request.json.get("message", {}).get("text", "")
+        for symbol in SYMBOLS:
+            if msg == "/시작":
+                auto_trading[symbol] = True
+                send_telegram(f"🚀 {symbol} 자동매매 시작됨")
+            elif msg == "/중지":
+                auto_trading[symbol] = False
+                send_telegram(f"⏹️ {symbol} 자동매매 중지됨")
+            elif msg == "/상태":
+                status = "ON" if auto_trading[symbol] else "OFF"
+                send_telegram(f"📊 {symbol} 상태: {status} / 손절: {consecutive_losses[symbol]}")
+            elif msg == "/수익률":
+                if positions[symbol]:
+                    price = get_price(symbol)
+                    entry = entry_prices[symbol]
+                    direction = positions[symbol]
+                    profit = ((price - entry) / entry * 100) if direction == "long" else ((entry - price) / entry * 100)
+                    send_telegram(f"📈 {symbol} 수익률: {profit:.2f}% ({direction})")
+                else:
+                    send_telegram(f"📈 {symbol} 포지션 없음")
+            elif msg == "/포지션":
+                if positions[symbol]:
+                    send_telegram(f"📌 {symbol} {positions[symbol].upper()} 진입가: {entry_prices[symbol]}")
+                else:
+                    send_telegram(f"📌 {symbol} 포지션 없음")
+    except Exception as e:
+        print("텔레그램 처리 에러:", e)
+    return "ok"
+
+
+if __name__ == '__main__':
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))).start()
+    asyncio.run(ws_loop())
