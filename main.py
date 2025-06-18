@@ -1,6 +1,6 @@
-# ✅ Bitget 실전 자동매매 최종 안정화 버전 (명령어 제어 제거, 잔액/지표 알림 포함)
+# ✅ Bitget 실전 자동매매 최종 완성본 (WebSocket 안정화, 잔액조회, 지표알림, 텔레그램 알림 포함)
 
-import asyncio, json, websockets, requests, hmac, hashlib, time
+import asyncio, json, websockets, requests, hmac, hashlib, time, threading
 from datetime import datetime
 import numpy as np
 
@@ -14,7 +14,7 @@ SYMBOLS = {
     'BTCUSDT': {'leverage': 10, 'amount': 150},
     'ETHUSDT': {'leverage': 7, 'amount': 120},
 }
-INST_TYPE = 'UMCBL'
+INST_TYPE = 'USDT-FUTURES'
 CHANNEL = 'candle15m'
 MAX_CANDLES = 100
 ENTRY_CCI = 100
@@ -44,7 +44,7 @@ def sign_request(timestamp, method, path, body=''):
     return hmac.new(API_SECRET.encode(), pre_hash.encode(), hashlib.sha256).hexdigest()
 
 def get_balance():
-    url_path = "/api/mix/v1/account/account?productType=umcbl&marginCoin=USDT"
+    url_path = "/api/mix/v1/account/account?marginCoin=USDT"
     timestamp = get_server_timestamp()
     sign = sign_request(timestamp, "GET", url_path)
     headers = {
@@ -185,16 +185,16 @@ def check_and_trade(symbol):
             asyncio.create_task(send_telegram_message(f"🔴 {symbol} 숏 진입 @ {price:.2f}"))
 
 def on_msg(msg):
-    if isinstance(msg.get("data"), list):
-        try:
-            d = msg['data'][0]
-            if isinstance(d, dict) and 'instId' in d and 'candle' in d:
-                symbol = d['instId']
-                candle = d['candle']
+    try:
+        if 'data' in msg and isinstance(msg['data'], list):
+            arg = msg.get('arg', {})
+            symbol = arg.get('instId')
+            candle = msg['data'][0]
+            if symbol and candle:
                 handle_new_candle(symbol, candle)
                 check_and_trade(symbol)
-        except Exception as e:
-            print(f"❌ 메시지 처리 오류: {e}")
+    except Exception as e:
+        print(f"❌ 메시지 처리 오류: {e}")
 
 async def ws_loop():
     global connected_once
