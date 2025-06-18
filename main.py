@@ -1,4 +1,6 @@
-# ✅ 자동매매 완성 코드 1/3 - 기본 설정 및 WebSocket 수신, 지표 처리
+# ✅ Bitget 자동매매 최종 완성 코드 (명령어 제어 제외 / 모든 함수 포함)
+# 실행 전 반드시 API_KEY, SECRET, PASSPHRASE, TELEGRAM 정보 입력 필요
+
 import asyncio, json, websockets, requests, hmac, hashlib, time
 from datetime import datetime
 import numpy as np
@@ -20,6 +22,10 @@ SYMBOLS = {
 INST_TYPE = 'USDT-FUTURES'
 CHANNEL = 'candle15m'
 MAX_CANDLES = 100
+ENTRY_CCI = 100
+STOP_LOSS = -0.02
+TAKE_PROFIT = 0.03
+TRAILING_GAP = 0.005
 
 candles = {sym: [] for sym in SYMBOLS}
 cci_values, adx_values, last_prices = {}, {}, {}
@@ -38,8 +44,8 @@ async def send_telegram_message(text):
 def get_server_timestamp():
     return str(int(time.time() * 1000))
 
-def sign_request(timestamp, method, path):
-    pre_hash = f"{timestamp}{method}{path}"
+def sign_request(timestamp, method, path, body=''):
+    pre_hash = f"{timestamp}{method}{path}{body}"
     return hmac.new(API_SECRET.encode(), pre_hash.encode(), hashlib.sha256).hexdigest()
 
 def get_balance():
@@ -57,6 +63,33 @@ def get_balance():
         return float(res['data']['available']) if res['code'] == '00000' else None
     except Exception as e:
         print(f"❌ 잔액 조회 오류: {e}")
+        return None
+
+def place_market_order(symbol, side, size):
+    url_path = "/api/mix/v1/order/place"
+    timestamp = get_server_timestamp()
+    body = json.dumps({
+        "symbol": symbol,
+        "marginCoin": "USDT",
+        "size": str(size),
+        "side": side,
+        "orderType": "market",
+        "tradeSide": side,
+        "productType": "umcbl",
+    })
+    sign = sign_request(timestamp, "POST", url_path, body)
+    headers = {
+        "ACCESS-KEY": API_KEY,
+        "ACCESS-SIGN": sign,
+        "ACCESS-TIMESTAMP": timestamp,
+        "ACCESS-PASSPHRASE": API_PASSPHRASE,
+        "Content-Type": "application/json"
+    }
+    try:
+        res = requests.post(f"https://api.bitget.com{url_path}", headers=headers, data=body).json()
+        return res
+    except Exception as e:
+        print(f"❌ 주문 오류: {e}")
         return None
 
 async def notify_start():
@@ -98,11 +131,97 @@ def handle_new_candle(symbol, candle):
     except Exception as e:
         print(f"❌ 캔들 처리 오류({symbol}): {e}")
 
+async def periodic_alert():
+    await asyncio.sleep(10)
+    while True:
+        try:
+            msg = "⏰ 1시간마다 지표 알림\n"
+            for symbol in SYMBOLS:
+                price = last_prices.get(symbol, 'N/A')
+                cci = cci_values.get(symbol, 'N/A')
+                adx = adx_values.get(symbol, 'N/A')
+                cci_str = f"{cci:.2f}" if isinstance(cci, (int, float)) else str(cci)
+                adx_str = f"{adx:.2f}" if isinstance(adx, (int, float)) else str(adx)
+                msg += f"[{symbol}] 가격: {price}\nCCI: {cci_str} | ADX: {adx_str}\n"
+            await send_telegram_message(msg)
+        except Exception as e:
+            print(f"❌ 지표 알림 오류: {e}")
+        await asyncio.sleep(3600)
+
+def check_and_trade(symbol):
+    if symbol in positions:
+        entry = positions[symbol]['entry']
+        size = positions[symbol]['size']
+        side = positions[symbol]['side']
+        price = last_prices[symbol]
+        if side == 'open_long':
+            profit = (price - entry) / entry
+            if profit >= TAKE_PROFIT:
+                trail_highs[symbol] = max(trail_highs[symbol], price)
+            if profit <= STOP_LOSS or (symbol in trail_highs and price < trail_highs[symbol] * (1 - TRAILING_GAP)):
+                place_market_order(symbol, 'close_long', size)
+                del positions[symbol], trail_highs[symbol]
+                asyncio.create_task(send_telegram_message(f"🔻 {symbol} 롱 청산 @ {price:.2f}"))
+        elif side == 'open_short':
+            profit = (entry - price) / entry
+            if profit >= TAKE_PROFIT:
+                trail_highs[symbol] = min(trail_highs[symbol], price)
+            if profit <= STOP_LOSS or (symbol in trail_highs and price > trail_highs[symbol] * (1 + TRAILING_GAP)):
+                place_market_order(symbol, 'close_short', size)
+                del positions[symbol], trail_highs[symbol]
+                asyncio.create_task(send_telegram_message(f"🔺 {symbol} 숏 청산 @ {price:.2f}"))
+    else:
+        cci, adx = cci_values.get(symbol), adx_values.get(symbol)
+        price = last_prices.get(symbol)
+        if cci is None or adx is None or adx < 25:
+            return
+        conf = SYMBOLS[symbol]
+        size = round(conf['amount'] * conf['leverage'] / price, 4)
+        if cci > ENTRY_CCI:
+            place_market_order(symbol, 'open_long', size)
+            positions[symbol] = {'entry': price, 'size': size, 'side': 'open_long'}
+            trail_highs[symbol] = price
+            asyncio.create_task(send_telegram_message(f"🟢 {symbol} 롱 진입 @ {price:.2f}"))
+        elif cci < -ENTRY_CCI:
+            place_market_order(symbol, 'open_short', size)
+            positions[symbol] = {'entry': price, 'size': size, 'side': 'open_short'}
+            trail_highs[symbol] = price
+            asyncio.create_task(send_telegram_message(f"🔴 {symbol} 숏 진입 @ {price:.2f}"))
+
+def on_msg(msg):
+    if isinstance(msg.get("data"), list):
+        try:
+            d = msg['data'][0]
+            symbol = d['instId']
+            candle = d['candle']
+            handle_new_candle(symbol, candle)
+            check_and_trade(symbol)
+        except Exception as e:
+            print(f"❌ 메시지 처리 오류: {e}")
+
+async def ws_loop():
+    global connected_once
+    uri = "wss://ws.bitget.com/v2/ws/public"
+    while True:
+        try:
+            async with websockets.connect(uri, ping_interval=20) as ws:
+                sub = {"op": "subscribe", "args": [{"instType": INST_TYPE, "channel": CHANNEL, "instId": s} for s in SYMBOLS]}
+                await ws.send(json.dumps(sub))
+                print("✅ WS 연결됨")
+                if not connected_once:
+                    await notify_start()
+                    connected_once = True
+                while True:
+                    msg = json.loads(await ws.recv())
+                    if msg.get("action") in ("snapshot", "update"):
+                        on_msg(msg)
+        except Exception as e:
+            print(f"🔌 WebSocket 오류: {e}")
+            await asyncio.sleep(10)
+
 if __name__ == '__main__':
     loop = asyncio.get_event_loop()
     loop.create_task(ws_loop())
     loop.create_task(periodic_alert())
     threading.Thread(target=lambda: app.run(host='0.0.0.0', port=3000)).start()
     loop.run_forever()
-
-# 👉 다음 응답에서: 자동매매 로직 (진입/청산), 트레일링 스탑, 알림 로직 이어짐
