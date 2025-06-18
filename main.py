@@ -1,12 +1,8 @@
-# ✅ Bitget 자동매매 최신 안정화 코드 (실시간 캔들, CCI/ADX, 실거래, 잔액 조회, 트레일링 스탑 포함)
+# ✅ Bitget 실전 자동매매 최종 안정화 버전 (명령어 제어 제거, 잔액/지표 알림 포함)
 
 import asyncio, json, websockets, requests, hmac, hashlib, time
 from datetime import datetime
 import numpy as np
-import threading
-from flask import Flask
-
-app = Flask(__name__)
 
 API_KEY = 'bg_a9c07aa3168e846bfaa713fe9af79d14'
 API_SECRET = '5be628fd41dce5eff78a607f31d096a4911d4e2156b6d66a14be20f027068043'
@@ -225,6 +221,5 @@ if __name__ == '__main__':
     asyncio.set_event_loop(loop)
     loop.create_task(ws_loop())
     loop.create_task(periodic_alert())
-    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=3000)).start()
     loop.run_forever()
 
