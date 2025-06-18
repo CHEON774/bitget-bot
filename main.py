@@ -71,7 +71,8 @@ def place_market_order(symbol, side):
         "force": "gtc"
     }
     headers = get_headers("POST", "/api/mix/v1/order/place", json.dumps(data))
-    return requests.post(url, headers=headers, json=data).json()
+    res = requests.post(url, headers=headers, json=data).json()
+    return res
 
 def get_price(symbol):
     url = f"https://api.bitget.com/api/mix/v1/market/ticker?symbol={symbol}&productType=USDT-FUTURES"
@@ -83,52 +84,60 @@ def get_price(symbol):
 
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
-    async with websockets.connect(uri, ping_interval=20) as ws:
-        subs = [{"instType": INST_TYPE, "channel": CHANNEL, "instId": s} for s in SYMBOLS]
-        await ws.send(json.dumps({"op": "subscribe", "args": subs}))
-        send_telegram(f"✅ WebSocket 연결 완료. 잔액: {get_balance()} USDT")
+    while True:
+        try:
+            async with websockets.connect(uri, ping_interval=20, ping_timeout=10) as ws:
+                subs = [{"instType": INST_TYPE, "channel": CHANNEL, "instId": s} for s in SYMBOLS]
+                await ws.send(json.dumps({"op": "subscribe", "args": subs}))
+                send_telegram(f"✅ WebSocket 연결 완료. 잔액: {get_balance()} USDT")
 
-        while True:
-            msg = json.loads(await ws.recv())
-            if msg.get("action") != "update": continue
-            data = msg["data"][0]
-            symbol = msg["arg"]["instId"]
-            price = float(data[4])
+                while True:
+                    msg = json.loads(await ws.recv())
+                    if msg.get("action") != "update": continue
+                    data = msg["data"][0]
+                    symbol = msg["arg"]["instId"]
+                    price = float(data[4])
 
-            if not positions[symbol] and auto_trading[symbol] and should_enter():
-                place_market_order(symbol, "open_long")
-                entry_prices[symbol] = price
-                positions[symbol] = True
-                trailing_active[symbol] = False
-                max_profits[symbol] = price
-                send_telegram(f"📈 {symbol} 진입: {price}")
+                    if not positions[symbol] and auto_trading[symbol] and should_enter():
+                        res = place_market_order(symbol, "open_long")
+                        if res.get("code") == "00000":
+                            entry_prices[symbol] = price
+                            positions[symbol] = True
+                            trailing_active[symbol] = False
+                            max_profits[symbol] = price
+                            send_telegram(f"📈 {symbol} 진입: {price}")
+                        else:
+                            send_telegram(f"❌ {symbol} 진입 실패: {res.get('msg')}")
 
-            elif positions[symbol]:
-                profit_pct = (price - entry_prices[symbol]) / entry_prices[symbol] * 100
-                if not trailing_active[symbol] and profit_pct >= 3:
-                    trailing_active[symbol] = True
-                    max_profits[symbol] = price
-                    send_telegram(f"⚡ {symbol} 트레일링 시작됨 (+3%)")
-                elif trailing_active[symbol]:
-                    if price > max_profits[symbol]:
-                        max_profits[symbol] = price
-                    elif price < max_profits[symbol] * 0.995:
-                        place_market_order(symbol, "close_long")
-                        send_telegram(f"❌ {symbol} 청산 @ {price} / 수익률: {profit_pct:.2f}%")
-                        positions[symbol] = False
-                        if profit_pct < 0:
+                    elif positions[symbol]:
+                        profit_pct = (price - entry_prices[symbol]) / entry_prices[symbol] * 100
+                        if not trailing_active[symbol] and profit_pct >= 3:
+                            trailing_active[symbol] = True
+                            max_profits[symbol] = price
+                            send_telegram(f"⚡ {symbol} 트레일링 시작됨 (+3%)")
+                        elif trailing_active[symbol]:
+                            if price > max_profits[symbol]:
+                                max_profits[symbol] = price
+                            elif price < max_profits[symbol] * 0.995:
+                                place_market_order(symbol, "close_long")
+                                send_telegram(f"❌ {symbol} 청산 @ {price} / 수익률: {profit_pct:.2f}%")
+                                positions[symbol] = False
+                                if profit_pct < 0:
+                                    loss_counts[symbol] += 1
+                                    if loss_counts[symbol] >= 3:
+                                        auto_trading[symbol] = False
+                                        send_telegram(f"⚠️ {symbol} 연속 손절 3회로 중지됨")
+                        elif profit_pct <= -2:
+                            place_market_order(symbol, "close_long")
+                            send_telegram(f"🛑 {symbol} 손절 -2% 청산 @ {price}")
+                            positions[symbol] = False
                             loss_counts[symbol] += 1
                             if loss_counts[symbol] >= 3:
                                 auto_trading[symbol] = False
                                 send_telegram(f"⚠️ {symbol} 연속 손절 3회로 중지됨")
-                elif profit_pct <= -2:
-                    place_market_order(symbol, "close_long")
-                    send_telegram(f"🛑 {symbol} 손절 -2% 청산 @ {price}")
-                    positions[symbol] = False
-                    loss_counts[symbol] += 1
-                    if loss_counts[symbol] >= 3:
-                        auto_trading[symbol] = False
-                        send_telegram(f"⚠️ {symbol} 연속 손절 3회로 중지됨")
+        except Exception as e:
+            send_telegram(f"🚨 WebSocket 오류 발생: {e}\n5초 후 재연결 시도")
+            await asyncio.sleep(5)
 
 def should_enter():
     return True
