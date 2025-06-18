@@ -2,6 +2,7 @@ import asyncio, json, websockets, requests, hmac, hashlib, time, base64
 from datetime import datetime
 from flask import Flask, request
 import threading
+import numpy as np
 
 app = Flask(__name__)
 
@@ -20,11 +21,12 @@ INST_TYPE = "USDT-FUTURES"
 CHANNEL = "candle15m"
 
 entry_prices = {s: None for s in SYMBOLS}
-positions = {s: False for s in SYMBOLS}
+positions = {s: None for s in SYMBOLS}  # 'long', 'short', or None
 trailing_active = {s: False for s in SYMBOLS}
 max_profits = {s: 0 for s in SYMBOLS}
 auto_trading = {s: True for s in SYMBOLS}
 loss_counts = {s: 0 for s in SYMBOLS}
+candles = {s: [] for s in SYMBOLS}
 
 
 def send_telegram(msg):
@@ -82,6 +84,51 @@ def get_price(symbol):
     except:
         return 0
 
+def calculate_cci(candles, period=14):
+    if len(candles) < period:
+        return None
+    closes = np.array([float(c[4]) for c in candles[-period:]])
+    highs = np.array([float(c[2]) for c in candles[-period:]])
+    lows = np.array([float(c[3]) for c in candles[-period:]])
+    tps = (highs + lows + closes) / 3
+    ma = np.mean(tps)
+    md = np.mean(np.abs(tps - ma))
+    if md == 0:
+        return 0
+    return (tps[-1] - ma) / (0.015 * md)
+
+def calculate_adx(candles, period=5):
+    if len(candles) < period + 1:
+        return None
+    highs = np.array([float(c[2]) for c in candles])
+    lows = np.array([float(c[3]) for c in candles])
+    closes = np.array([float(c[4]) for c in candles])
+    plus_dm = highs[1:] - highs[:-1]
+    minus_dm = lows[:-1] - lows[1:]
+    plus_dm[plus_dm < 0] = 0
+    minus_dm[minus_dm < 0] = 0
+    tr = np.maximum.reduce([highs[1:] - lows[1:],
+                            np.abs(highs[1:] - closes[:-1]),
+                            np.abs(lows[1:] - closes[:-1])])
+    tr_sum = np.sum(tr[-period:])
+    plus_di = 100 * np.sum(plus_dm[-period:]) / tr_sum
+    minus_di = 100 * np.sum(minus_dm[-period:]) / tr_sum
+    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+    return dx
+
+def determine_direction(symbol):
+    if len(candles[symbol]) < 20:
+        return None
+    cci = calculate_cci(candles[symbol])
+    adx = calculate_adx(candles[symbol])
+    if cci is None or adx is None:
+        return None
+    if cci > 100 and adx > 25:
+        return "long"
+    elif cci < -100 and adx > 25:
+        return "short"
+    return None
+
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
     while True:
@@ -97,40 +144,49 @@ async def ws_loop():
                     data = msg["data"][0]
                     symbol = msg["arg"]["instId"]
                     price = float(data[4])
+                    candles[symbol].append(data)
+                    if len(candles[symbol]) > 100:
+                        candles[symbol] = candles[symbol][-100:]
 
-                    if not positions[symbol] and auto_trading[symbol] and should_enter():
-                        res = place_market_order(symbol, "open_long")
+                    direction = determine_direction(symbol)
+                    if positions[symbol] is None and auto_trading[symbol] and direction:
+                        side = "open_long" if direction == "long" else "open_short"
+                        res = place_market_order(symbol, side)
                         if res.get("code") == "00000":
                             entry_prices[symbol] = price
-                            positions[symbol] = True
+                            positions[symbol] = direction
                             trailing_active[symbol] = False
                             max_profits[symbol] = price
-                            send_telegram(f"📈 {symbol} 진입: {price}")
+                            send_telegram(f"📈 {symbol} {direction.upper()} 진입: {price}")
                         else:
                             send_telegram(f"❌ {symbol} 진입 실패: {res.get('msg')}")
 
                     elif positions[symbol]:
-                        profit_pct = (price - entry_prices[symbol]) / entry_prices[symbol] * 100
+                        entry = entry_prices[symbol]
+                        pos = positions[symbol]
+                        profit_pct = ((price - entry) / entry * 100) if pos == "long" else ((entry - price) / entry * 100)
                         if not trailing_active[symbol] and profit_pct >= 3:
                             trailing_active[symbol] = True
                             max_profits[symbol] = price
                             send_telegram(f"⚡ {symbol} 트레일링 시작됨 (+3%)")
                         elif trailing_active[symbol]:
-                            if price > max_profits[symbol]:
+                            if (pos == "long" and price > max_profits[symbol]) or (pos == "short" and price < max_profits[symbol]):
                                 max_profits[symbol] = price
-                            elif price < max_profits[symbol] * 0.995:
-                                place_market_order(symbol, "close_long")
+                            elif (pos == "long" and price < max_profits[symbol] * 0.995) or (pos == "short" and price > max_profits[symbol] * 1.005):
+                                close_side = "close_long" if pos == "long" else "close_short"
+                                place_market_order(symbol, close_side)
                                 send_telegram(f"❌ {symbol} 청산 @ {price} / 수익률: {profit_pct:.2f}%")
-                                positions[symbol] = False
+                                positions[symbol] = None
                                 if profit_pct < 0:
                                     loss_counts[symbol] += 1
                                     if loss_counts[symbol] >= 3:
                                         auto_trading[symbol] = False
                                         send_telegram(f"⚠️ {symbol} 연속 손절 3회로 중지됨")
                         elif profit_pct <= -2:
-                            place_market_order(symbol, "close_long")
+                            close_side = "close_long" if pos == "long" else "close_short"
+                            place_market_order(symbol, close_side)
                             send_telegram(f"🛑 {symbol} 손절 -2% 청산 @ {price}")
-                            positions[symbol] = False
+                            positions[symbol] = None
                             loss_counts[symbol] += 1
                             if loss_counts[symbol] >= 3:
                                 auto_trading[symbol] = False
@@ -138,9 +194,6 @@ async def ws_loop():
         except Exception as e:
             send_telegram(f"🚨 WebSocket 오류 발생: {e}\n5초 후 재연결 시도")
             await asyncio.sleep(5)
-
-def should_enter():
-    return True
 
 @app.route("/텔레그램", methods=['POST'])
 def telegram_webhook():
@@ -159,13 +212,15 @@ def telegram_webhook():
         elif msg in ["/이익률", "/수익률"]:
             if positions[symbol]:
                 price = get_price(symbol)
-                profit_pct = (price - entry_prices[symbol]) / entry_prices[symbol] * 100
-                send_telegram(f"📈 {symbol} 수익률: {profit_pct:.2f}%")
+                entry = entry_prices[symbol]
+                direction = positions[symbol]
+                profit_pct = ((price - entry) / entry * 100) if direction == "long" else ((entry - price) / entry * 100)
+                send_telegram(f"📈 {symbol} 수익률: {profit_pct:.2f}% ({direction})")
             else:
                 send_telegram(f"📈 {symbol} 포지션 없음")
         elif msg == "/포지션":
             if positions[symbol]:
-                send_telegram(f"📌 {symbol} 진입가: {entry_prices[symbol]}")
+                send_telegram(f"📌 {symbol} {positions[symbol].upper()} 진입가: {entry_prices[symbol]}")
             else:
                 send_telegram(f"📌 {symbol} 포지션 없음")
     return "ok"
