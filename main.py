@@ -30,19 +30,22 @@ trailing_active = {symbol: False for symbol in SYMBOLS}
 auto_trading_enabled = {symbol: True for symbol in SYMBOLS}
 consecutive_losses = {symbol: 0 for symbol in SYMBOLS}
 
+
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        safe_message = message.encode("utf-16", "surrogatepass").decode("utf-16")
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": safe_message})
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message.encode('utf-8')})
     except Exception as e:
         print("❌ 텔레그램 전송 실패:", e)
+
 
 def sign(message, secret):
     return base64.b64encode(hmac.new(secret.encode(), message.encode(), hashlib.sha256).digest()).decode()
 
+
 def get_timestamp():
     return str(int(time.time() * 1000))
+
 
 def get_bitget_headers(method, path, body=''):
     timestamp = get_timestamp()
@@ -56,6 +59,7 @@ def get_bitget_headers(method, path, body=''):
         'locale': 'en-US'
     }
 
+
 def get_price(symbol):
     url = f"https://api.bitget.com/api/mix/v1/market/ticker?symbol={symbol}&productType=USDT-FUTURES"
     try:
@@ -65,6 +69,7 @@ def get_price(symbol):
             return float(data["data"].get("last", 0))
     except:
         return None
+
 
 def get_account_balance(send=False):
     path = "/api/v2/account/all-account-balance"
@@ -81,6 +86,7 @@ def get_account_balance(send=False):
     except:
         return None
 
+
 def calculate_cci(candles):
     if len(candles) < 14:
         return None
@@ -89,6 +95,7 @@ def calculate_cci(candles):
     ma = np.mean(typical_prices)
     md = np.mean([abs(x - ma) for x in typical_prices])
     return (tp - ma) / (0.015 * md) if md else 0
+
 
 def calculate_adx(candles):
     if len(candles) < 20:
@@ -103,6 +110,7 @@ def calculate_adx(candles):
     minus_di = 100 * (np.convolve(np.where(minus_dm > plus_dm, minus_dm, 0), np.ones(5), 'valid') / np.convolve(tr, np.ones(5), 'valid'))
     dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
     return np.mean(dx[-5:]) if len(dx) >= 5 else 0
+
 
 def open_position(symbol, side):
     if positions[symbol] != 0:
@@ -132,6 +140,7 @@ def open_position(symbol, side):
         send_telegram(f"✅ {symbol} {side.upper()} 진입! 진입가: {price:.2f}")
     return
 
+
 def check_exit(symbol):
     price = get_price(symbol)
     if not price or positions[symbol] == 0:
@@ -159,9 +168,10 @@ def check_exit(symbol):
                 send_telegram(f"📈 {symbol} 트레일링 청산: {price:.2f}")
                 positions[symbol] = 0
 
+
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
-    async with websockets.connect(uri, ping_interval=20) as ws:
+    async with websockets.connect(uri, ping_interval=20, ping_timeout=10, close_timeout=5) as ws:
         args = [{"instType": INST_TYPE, "channel": CHANNEL, "instId": symbol} for symbol in SYMBOLS]
         await ws.send(json.dumps({"op": "subscribe", "args": args}))
         while True:
@@ -188,59 +198,49 @@ async def ws_loop():
                 print("WebSocket 오류:", e)
                 await asyncio.sleep(5)
 
+
 def start_ws():
     asyncio.run(ws_loop())
+
 
 def start_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
+
 @app.route('/텔레그램', methods=['POST'])
 def telegram_webhook():
-    try:
-        data = request.json
-        print("📩 [수신한 JSON 전체]:", json.dumps(data, ensure_ascii=False, indent=2))
-
-        message = data.get("message") or data.get("edited_message") or {}
-        text = message.get("text", "")
-        chat_id = message.get("chat", {}).get("id", "")
-
-        if not text:
-            return "no text", 200
-
-        if text.startswith("/시작"):
-            for s in auto_trading_enabled:
-                auto_trading_enabled[s] = True
-            send_telegram("✅ 자동매매 시작!")
-        elif text.startswith("/중지"):
-            for s in auto_trading_enabled:
-                auto_trading_enabled[s] = False
-            send_telegram("🛑 자동매매 중단!")
-        elif text.startswith("/상태"):
-            status = [f"{s}: {'ON' if auto_trading_enabled[s] else 'OFF'}" for s in SYMBOLS]
-            send_telegram("📈 매매 상태:\n" + "\n".join(status))
-        elif text.startswith("/수익률"):
-            bal = get_account_balance()
-            if bal:
-                rate = ((bal - INITIAL_BALANCE) / INITIAL_BALANCE) * 100
-                send_telegram(f"💰 수익률: {rate:.2f}%")
-        elif text.startswith("/포지션"):
-            for s in SYMBOLS:
-                if positions[s] != 0:
-                    send_telegram(f\"📌 {s} {'롱' if positions[s] > 0 else '숏'} | 진입가: {entry_prices[s]:.2f}\")
-                else:
-                    send_telegram(f\"📌 {s} 포지션 없음\")
-
-        return \"ok\", 200
-
-    except Exception as e:
-        print(\"❌ 텔레그램 Webhook 처리 실패:\", e)
-        return \"error\", 500
-
+    data = request.json
+    msg = data.get("message", {})
+    text = msg.get("text", "")
+    if not text:
+        return "no message", 200
+    if "시작" in text:
+        for s in auto_trading_enabled:
+            auto_trading_enabled[s] = True
+        send_telegram("✅ 자동매매 시작!")
+    elif "중지" in text:
+        for s in auto_trading_enabled:
+            auto_trading_enabled[s] = False
+        send_telegram("🛑 자동매매 중단!")
+    elif "상태" in text:
+        status = [f"{s}: {'ON' if auto_trading_enabled[s] else 'OFF'}" for s in SYMBOLS]
+        send_telegram("📈 매매 상태:\n" + "\n".join(status))
+    elif "수익률" in text:
+        bal = get_account_balance()
+        if bal:
+            rate = ((bal - INITIAL_BALANCE) / INITIAL_BALANCE) * 100
+            send_telegram(f"💰 수익률: {rate:.2f}%")
+    elif "포지션" in text:
+        for s in SYMBOLS:
+            if positions[s] != 0:
+                send_telegram(f"📌 {s} {'롱' if positions[s] > 0 else '숏'} | 진입가: {entry_prices[s]:.2f}")
+            else:
+                send_telegram(f"📌 {s} 포지션 없음")
+    return "ok", 200
 
 
 if __name__ == '__main__':
-    send_telegram("✅ 봇 정상시작 완료! 잔액 확인 중...")
     get_account_balance(send=True)
     threading.Thread(target=start_ws).start()
     start_flask()
