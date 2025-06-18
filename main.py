@@ -1,4 +1,4 @@
-import asyncio, json, websockets, requests, hmac, hashlib, time, base64, os
+import asyncio, json, websockets, requests, hmac, hashlib, time, base64
 from datetime import datetime
 import numpy as np
 from websockets.exceptions import ConnectionClosedError
@@ -19,195 +19,136 @@ SYMBOLS = {
 }
 INST_TYPE = "USDT-FUTURES"
 CHANNEL = "candle15m"
-MAX_CANDLES = 150
-INITIAL_BALANCE = 756
-
+MAX_CANDLES = 100
 candles = {symbol: [] for symbol in SYMBOLS}
-positions = {symbol: 0 for symbol in SYMBOLS}
-entry_prices = {symbol: 0 for symbol in SYMBOLS}
-trailing_highs = {symbol: 0 for symbol in SYMBOLS}
-trailing_active = {symbol: False for symbol in SYMBOLS}
-auto_trading_enabled = {symbol: True for symbol in SYMBOLS}
-consecutive_losses = {symbol: 0 for symbol in SYMBOLS}
 
-def send_telegram(message):
+cci_values = {}
+adx_values = {}
+last_prices = {}
+
+async def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
     try:
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message})
+        requests.post(url, data=data)
     except Exception as e:
-        print("❌ 텔레그램 전송 실패:", e)
+        print(f"❌ Telegram Error: {e}")
 
-def sign(message, secret):
-    return base64.b64encode(hmac.new(secret.encode(), message.encode(), hashlib.sha256).digest()).decode()
-
-def get_timestamp():
+def get_server_timestamp():
     return str(int(time.time() * 1000))
 
-def get_bitget_headers(method, path, body=''):
-    timestamp = get_timestamp()
-    pre_hash = timestamp + method + path + body
-    signature = sign(pre_hash, API_SECRET)
-    return {
-        'ACCESS-KEY': API_KEY,
-        'ACCESS-SIGN': signature,
-        'ACCESS-TIMESTAMP': timestamp,
-        'ACCESS-PASSPHRASE': API_PASSPHRASE,
-        'locale': 'en-US'
+def sign_request(timestamp, method, path):
+    pre_hash = f"{timestamp}{method}{path}"
+    sign = hmac.new(API_SECRET.encode(), pre_hash.encode(), hashlib.sha256).hexdigest()
+    return sign
+
+def get_balance():
+    url_path = "/api/mix/v1/account/account?marginCoin=USDT"
+    method = "GET"
+    timestamp = get_server_timestamp()
+    sign = sign_request(timestamp, method, url_path)
+    headers = {
+        "ACCESS-KEY": API_KEY,
+        "ACCESS-SIGN": sign,
+        "ACCESS-TIMESTAMP": timestamp,
+        "ACCESS-PASSPHRASE": API_PASSPHRASE
     }
-
-def get_account_balance(send=False):
-    path = "/api/v2/account/all-account-balance"
-    url = f"https://api.bitget.com{path}"
-    headers = get_bitget_headers("GET", path)
+    url = f"https://api.bitget.com{url_path}"
     try:
-        res = requests.get(url, headers=headers)
-        data = res.json()
-        if data.get("code") == "00000":
-            balance = float(next((item["usdtBalance"] for item in data["data"] if item["accountType"] == "futures"), 0))
-            if send:
-                send_telegram(f"\ud83d\udcca 현재 선물 계정 잔액: {balance:.2f} USDT")
-            return balance
+        response = requests.get(url, headers=headers).json()
+        return float(response['data']['available'])
     except:
         return None
 
-def calculate_cci(candles):
-    if len(candles) < 14:
-        return None
-    typical_prices = [(float(c[1]) + float(c[2]) + float(c[3])) / 3 for c in candles[-14:]]
-    tp = typical_prices[-1]
-    ma = np.mean(typical_prices)
-    md = np.mean([abs(x - ma) for x in typical_prices])
-    return (tp - ma) / (0.015 * md) if md else 0
+async def notify_startup():
+    balance = get_balance()
+    msg = "\ud83d\udce5 \uadf8\ub9ac\uace0 \uc790\ub3d9\ub9e4\ubc88 \uc2dc\uc791!\n"
+    for sym, conf in SYMBOLS.items():
+        msg += f"[{sym}] \uae08\uc561: ${conf['amount']} | \ub808\ubc84\ub9ac\uc9c0: {conf['leverage']}\ubc88\n"
+    msg += f"\n\ud83d\udcb0 USDT \uc794\uc561: {balance} USDT" if balance is not None else "\n\ud83d\udcb0 USDT \uc794\uc561 \ud68c\uc2e0 \uc624\ub958"
+    await send_telegram_message(msg)
 
-def calculate_adx(candles):
-    if len(candles) < 20:
-        return 0
-    highs = np.array([float(c[2]) for c in candles])
-    lows = np.array([float(c[3]) for c in candles])
-    closes = np.array([float(c[4]) for c in candles])
-    plus_dm = highs[1:] - highs[:-1]
-    minus_dm = lows[:-1] - lows[1:]
-    tr = np.maximum.reduce([highs[1:] - lows[1:], abs(highs[1:] - closes[:-1]), abs(lows[1:] - closes[:-1])])
-    plus_di = 100 * (np.convolve(np.where(plus_dm > minus_dm, plus_dm, 0), np.ones(5), 'valid') / np.convolve(tr, np.ones(5), 'valid'))
-    minus_di = 100 * (np.convolve(np.where(minus_dm > plus_dm, minus_dm, 0), np.ones(5), 'valid') / np.convolve(tr, np.ones(5), 'valid'))
-    dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
-    return np.mean(dx[-5:]) if len(dx) >= 5 else 0
-
-def get_price(symbol):
-    url = f"https://api.bitget.com/api/mix/v1/market/ticker?symbol={symbol}"
+def calculate_cci(data):
     try:
-        res = requests.get(url)
-        return float(res.json()['data']['last'])
+        typical_prices = [(float(o)+float(h)+float(l))/3 for o,h,l in zip(data[:,1], data[:,2], data[:,3])]
+        ma = np.mean(typical_prices)
+        md = np.mean(np.abs(typical_prices - ma))
+        return (typical_prices[-1] - ma) / (0.015 * md)
     except:
         return None
 
-def open_position(symbol, side):
-    if positions[symbol] != 0:
-        return
-    price = get_price(symbol)
-    if not price:
-        return
-    path = "/api/mix/v1/order/place"
-    url = f"https://api.bitget.com{path}"
-    size = round(SYMBOLS[symbol]["amount"] * SYMBOLS[symbol]["leverage"] / price, 3)
-    body = json.dumps({
-        "symbol": symbol,
-        "marginCoin": "USDT",
-        "size": str(size),
-        "side": "open_long" if side == "long" else "open_short",
-        "orderType": "market",
-        "productType": INST_TYPE
-    })
-    headers = get_bitget_headers("POST", path, body)
-    res = requests.post(url, headers=headers, data=body)
-    data = res.json()
-    if data.get("code") == "00000":
-        positions[symbol] = 1 if side == "long" else -1
-        entry_prices[symbol] = price
-        trailing_highs[symbol] = price
-        trailing_active[symbol] = False
-        send_telegram(f"\u2705 {symbol} {side.upper()} 진입! 진입가: {price:.2f}")
+def calculate_adx(data):
+    try:
+        highs = data[:,2].astype(float)
+        lows = data[:,3].astype(float)
+        closes = data[:,4].astype(float)
+        tr = np.maximum(highs[1:], closes[:-1]) - np.minimum(lows[1:], closes[:-1])
+        plus_dm = np.where((highs[1:] - highs[:-1]) > (lows[:-1] - lows[1:]), highs[1:] - highs[:-1], 0)
+        minus_dm = np.where((lows[:-1] - lows[1:]) > (highs[1:] - highs[:-1]), lows[:-1] - lows[1:], 0)
+        tr_smooth = np.mean(tr[-5:])
+        plus_di = 100 * (np.mean(plus_dm[-5:]) / tr_smooth)
+        minus_di = 100 * (np.mean(minus_dm[-5:]) / tr_smooth)
+        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+        return dx
+    except:
+        return None
 
-def check_exit(symbol):
-    price = get_price(symbol)
-    if not price or positions[symbol] == 0:
-        return
-    entry = entry_prices[symbol]
-    change = (price - entry) / entry * 100 if positions[symbol] > 0 else (entry - price) / entry * 100
-    if change <= -2:
-        send_telegram(f"\ud83d\udd39 {symbol} 손절 -2% 실행: {price:.2f}")
-        positions[symbol] = 0
-        consecutive_losses[symbol] += 1
-        if consecutive_losses[symbol] >= 3:
-            auto_trading_enabled[symbol] = False
-            send_telegram(f"\u26d4 {symbol} 연속 손절 3회 → 자동매매 중단")
-    elif change >= 3:
-        trailing_active[symbol] = True
-    if trailing_active[symbol]:
-        if positions[symbol] > 0:
-            trailing_highs[symbol] = max(trailing_highs[symbol], price)
-            if price <= trailing_highs[symbol] * 0.995:
-                send_telegram(f"\ud83d\udcc9 {symbol} 트레일링 청산: {price:.2f}")
-                positions[symbol] = 0
-        else:
-            trailing_highs[symbol] = min(trailing_highs[symbol], price)
-            if price >= trailing_highs[symbol] * 1.005:
-                send_telegram(f"\ud83d\udcc8 {symbol} 트레일링 청산: {price:.2f}")
-                positions[symbol] = 0
+def handle_new_candle(symbol, candle):
+    ts, o, h, l, c, v = candle
+    candles[symbol].append([ts, o, h, l, c, v])
+    if len(candles[symbol]) > MAX_CANDLES:
+        candles[symbol].pop(0)
+    np_data = np.array(candles[symbol])
+    cci_values[symbol] = calculate_cci(np_data[-15:])
+    adx_values[symbol] = calculate_adx(np_data[-6:])
+    last_prices[symbol] = float(c)
 
-async def ws_loop():
+async def periodic_telegram_alert():
+    await asyncio.sleep(10)
     while True:
         try:
-            uri = "wss://ws.bitget.com/v2/ws/public"
+            msg = "\u23f0 1\uc2dc\uac04\ub9cc\uc5d0 \uc790\ub3d9 \uc54c\ub9bc\n"
+            for symbol in SYMBOLS:
+                price = last_prices.get(symbol, 'N/A')
+                cci = cci_values.get(symbol, 'N/A')
+                adx = adx_values.get(symbol, 'N/A')
+                msg += f"[{symbol}]\n\uac00\uaca9: {price}\nCCI(14): {cci:.2f}\nADX(5): {adx:.2f}\n\n"
+            await send_telegram_message(msg)
+        except Exception as e:
+            print(f"❌ \uc8fc\uae30 \uc54c\ub9bc \uc624\ub958: {e}")
+        await asyncio.sleep(3600)
+
+def on_msg(msg):
+    d = msg["data"][0]
+    symbol = d["instId"]
+    candle = d["candle"]
+    handle_new_candle(symbol, candle)
+    ts = int(candle[0])
+    print(f"🕒 {symbol} | {datetime.fromtimestamp(ts/1000):%Y-%m-%d %H:%M:%S} | O:{candle[1]} H:{candle[2]} L:{candle[3]} C:{candle[4]} V:{candle[5]}")
+
+async def ws_loop():
+    uri = "wss://ws.bitget.com/v2/ws/public"
+    while True:
+        try:
             async with websockets.connect(uri, ping_interval=20) as ws:
-                args = [{"instType": INST_TYPE, "channel": CHANNEL, "instId": symbol} for symbol in SYMBOLS]
-                await ws.send(json.dumps({"op": "subscribe", "args": args}))
-                print("\u2705 WebSocket 연결됨")
+                sub = {
+                    "op": "subscribe",
+                    "args": [{"instType": INST_TYPE, "channel": CHANNEL, "instId": s} for s in SYMBOLS]
+                }
+                await ws.send(json.dumps(sub))
+                print("✅ WS 연결됨 / candle15m 구독 시도")
+                await notify_startup()
                 while True:
                     msg = json.loads(await ws.recv())
-                    if "data" not in msg:
-                        continue
-                    d = msg["data"][0]
-                    symbol = msg["arg"]["instId"]
-                    candles[symbol].append(d)
-                    candles[symbol] = candles[symbol][-MAX_CANDLES:]
-                    if auto_trading_enabled[symbol] and len(candles[symbol]) >= MAX_CANDLES:
-                        cci = calculate_cci(candles[symbol])
-                        adx = calculate_adx(candles[symbol])
-                        if positions[symbol] == 0:
-                            if cci and adx:
-                                if cci > 100 and adx > 25:
-                                    open_position(symbol, "long")
-                                elif cci < -100 and adx > 25:
-                                    open_position(symbol, "short")
-                        else:
-                            check_exit(symbol)
+                    if msg.get("action") in ("snapshot", "update"):
+                        on_msg(msg)
         except Exception as e:
-            print("WebSocket 오류:", e)
+            print(f"🔌 WebSocket 연결 오류: {e} / 5초 후 재연결 시도")
             await asyncio.sleep(5)
 
-def start_ws():
-    asyncio.run(ws_loop())
-
-def start_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
-
-def hourly_alert():
-    while True:
-        time.sleep(3600)
-        for s in SYMBOLS:
-            if len(candles[s]) >= MAX_CANDLES:
-                cci = calculate_cci(candles[s])
-                adx = calculate_adx(candles[s])
-                send_telegram(f"\u23f0 {s} CCI: {cci:.2f}, ADX: {adx:.2f}")
-
-def delayed_balance_alert():
-    time.sleep(5)
-    get_account_balance(send=True)
-
-if __name__ == '__main__':
-    threading.Thread(target=start_ws).start()
-    threading.Thread(target=start_flask).start()
-    threading.Thread(target=delayed_balance_alert).start()
-    threading.Thread(target=hourly_alert).start()
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    loop.create_task(ws_loop())
+    loop.create_task(periodic_telegram_alert())
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=3000)).start()
+    loop.run_forever()
