@@ -1,5 +1,4 @@
-# ✅ Bitget 자동매매 최종 완성 코드 (명령어 제어 제외 / 모든 함수 포함)
-# 실행 전 반드시 API_KEY, SECRET, PASSPHRASE, TELEGRAM 정보 입력 필요
+# ✅ Bitget 자동매매 최신 안정화 코드 (실시간 캔들, CCI/ADX, 실거래, 잔액 조회, 트레일링 스탑 포함)
 
 import asyncio, json, websockets, requests, hmac, hashlib, time
 from datetime import datetime
@@ -19,7 +18,7 @@ SYMBOLS = {
     'BTCUSDT': {'leverage': 10, 'amount': 150},
     'ETHUSDT': {'leverage': 7, 'amount': 120},
 }
-INST_TYPE = 'USDT-FUTURES'
+INST_TYPE = 'UMCBL'
 CHANNEL = 'candle15m'
 MAX_CANDLES = 100
 ENTRY_CCI = 100
@@ -49,7 +48,7 @@ def sign_request(timestamp, method, path, body=''):
     return hmac.new(API_SECRET.encode(), pre_hash.encode(), hashlib.sha256).hexdigest()
 
 def get_balance():
-    url_path = "/api/mix/v1/account/account?marginCoin=USDT"
+    url_path = "/api/mix/v1/account/account?productType=umcbl&marginCoin=USDT"
     timestamp = get_server_timestamp()
     sign = sign_request(timestamp, "GET", url_path)
     headers = {
@@ -75,7 +74,7 @@ def place_market_order(symbol, side, size):
         "side": side,
         "orderType": "market",
         "tradeSide": side,
-        "productType": "umcbl",
+        "productType": "umcbl"
     })
     sign = sign_request(timestamp, "POST", url_path, body)
     headers = {
@@ -103,7 +102,8 @@ async def notify_start():
 def calculate_cci(data):
     try:
         tps = [(float(o)+float(h)+float(l))/3 for o,h,l in zip(data[:,1], data[:,2], data[:,3])]
-        ma, md = np.mean(tps), np.mean(np.abs(tps - np.mean(tps)))
+        ma = np.mean(tps)
+        md = np.mean(np.abs(tps - ma))
         return (tps[-1] - ma) / (0.015 * md)
     except: return None
 
@@ -192,10 +192,11 @@ def on_msg(msg):
     if isinstance(msg.get("data"), list):
         try:
             d = msg['data'][0]
-            symbol = d['instId']
-            candle = d['candle']
-            handle_new_candle(symbol, candle)
-            check_and_trade(symbol)
+            if isinstance(d, dict) and 'instId' in d and 'candle' in d:
+                symbol = d['instId']
+                candle = d['candle']
+                handle_new_candle(symbol, candle)
+                check_and_trade(symbol)
         except Exception as e:
             print(f"❌ 메시지 처리 오류: {e}")
 
@@ -220,8 +221,10 @@ async def ws_loop():
             await asyncio.sleep(10)
 
 if __name__ == '__main__':
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     loop.create_task(ws_loop())
     loop.create_task(periodic_alert())
     threading.Thread(target=lambda: app.run(host='0.0.0.0', port=3000)).start()
     loop.run_forever()
+
