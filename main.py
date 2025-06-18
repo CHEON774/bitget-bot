@@ -33,9 +33,16 @@ consecutive_losses = {symbol: 0 for symbol in SYMBOLS}
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message})
+        requests.post(
+            url,
+            data={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message.encode("utf-16", "surrogatepass").decode("utf-16")
+            }
+        )
     except Exception as e:
         print("❌ 텔레그램 전송 실패:", e)
+
 
 def sign(message, secret):
     return base64.b64encode(hmac.new(secret.encode(), message.encode(), hashlib.sha256).digest()).decode()
