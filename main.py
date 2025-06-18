@@ -30,7 +30,8 @@ async def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
     try:
-        requests.post(url, data=data)
+        headers = {'Content-Type': 'application/json'}
+        requests.post(url, data=json.dumps(data, ensure_ascii=False), headers=headers)
     except Exception as e:
         print(f"❌ Telegram Error: {e}")
 
@@ -62,10 +63,10 @@ def get_balance():
 
 async def notify_startup():
     balance = get_balance()
-    msg = "\ud83d\udce5 \uadf8\ub9ac\uace0 \uc790\ub3d9\ub9e4\ubc88 \uc2dc\uc791!\n"
+    msg = "📥 그리고 자동매매 시작!\n"
     for sym, conf in SYMBOLS.items():
-        msg += f"[{sym}] \uae08\uc561: ${conf['amount']} | \ub808\ubc84\ub9ac\uc9c0: {conf['leverage']}\ubc88\n"
-    msg += f"\n\ud83d\udcb0 USDT \uc794\uc561: {balance} USDT" if balance is not None else "\n\ud83d\udcb0 USDT \uc794\uc561 \ud68c\uc2e0 \uc624\ub958"
+        msg += f"[{sym}] 금액: ${conf['amount']} | 레버리지: {conf['leverage']}번\n"
+    msg += f"\n💰 USDT 잔액: {balance} USDT" if balance is not None else "\n💰 USDT 잔액 확인 오류"
     await send_telegram_message(msg)
 
 def calculate_cci(data):
@@ -107,24 +108,28 @@ async def periodic_telegram_alert():
     await asyncio.sleep(10)
     while True:
         try:
-            msg = "\u23f0 1\uc2dc\uac04\ub9cc\uc5d0 \uc790\ub3d9 \uc54c\ub9bc\n"
+            msg = "⏰ 1시간마다 자동 알림\n"
             for symbol in SYMBOLS:
                 price = last_prices.get(symbol, 'N/A')
                 cci = cci_values.get(symbol, 'N/A')
                 adx = adx_values.get(symbol, 'N/A')
-                msg += f"[{symbol}]\n\uac00\uaca9: {price}\nCCI(14): {cci:.2f}\nADX(5): {adx:.2f}\n\n"
+                msg += f"[{symbol}]\n가격: {price}\nCCI(14): {cci:.2f}\nADX(5): {adx:.2f}\n\n"
             await send_telegram_message(msg)
         except Exception as e:
-            print(f"❌ \uc8fc\uae30 \uc54c\ub9bc \uc624\ub958: {e}")
+            print(f"❌ 주기 알림 오류: {e}")
         await asyncio.sleep(3600)
 
 def on_msg(msg):
-    d = msg["data"][0]
-    symbol = d["instId"]
-    candle = d["candle"]
-    handle_new_candle(symbol, candle)
-    ts = int(candle[0])
-    print(f"🕒 {symbol} | {datetime.fromtimestamp(ts/1000):%Y-%m-%d %H:%M:%S} | O:{candle[1]} H:{candle[2]} L:{candle[3]} C:{candle[4]} V:{candle[5]}")
+    if isinstance(msg.get("data"), list):
+        d = msg["data"][0]
+        symbol = d.get("instId")
+        candle = d.get("candle")
+        if symbol and candle:
+            handle_new_candle(symbol, candle)
+            ts = int(candle[0])
+            print(f"🕒 {symbol} | {datetime.fromtimestamp(ts/1000):%Y-%m-%d %H:%M:%S} | O:{candle[1]} H:{candle[2]} L:{candle[3]} C:{candle[4]} V:{candle[5]}")
+    else:
+        print("⚠️ WebSocket 메시지 형식 이상:", msg)
 
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
