@@ -210,34 +210,27 @@ def start_flask():
 
 @app.route('/텔레그램', methods=['POST'])
 def telegram_webhook():
-    data = request.json
-    msg = data.get("message", {})
-    text = msg.get("text", "")
-    if not text:
-        return "no message", 200
-    if "시작" in text:
-        for s in auto_trading_enabled:
-            auto_trading_enabled[s] = True
-        send_telegram("✅ 자동매매 시작!")
-    elif "중지" in text:
-        for s in auto_trading_enabled:
-            auto_trading_enabled[s] = False
-        send_telegram("🛑 자동매매 중단!")
-    elif "상태" in text:
-        status = [f"{s}: {'ON' if auto_trading_enabled[s] else 'OFF'}" for s in SYMBOLS]
-        send_telegram("📈 매매 상태:\n" + "\n".join(status))
-    elif "수익률" in text:
-        bal = get_account_balance()
-        if bal:
-            rate = ((bal - INITIAL_BALANCE) / INITIAL_BALANCE) * 100
-            send_telegram(f"💰 수익률: {rate:.2f}%")
-    elif "포지션" in text:
-        for s in SYMBOLS:
-            if positions[s] != 0:
-                send_telegram(f"📌 {s} {'롱' if positions[s] > 0 else '숏'} | 진입가: {entry_prices[s]:.2f}")
-            else:
-                send_telegram(f"📌 {s} 포지션 없음")
+    try:
+        data = request.get_json(force=True) or {}
+        print("📥 텔레그램 요청 수신함:", json.dumps(data, ensure_ascii=False))
+
+        msg = data.get("message") or data.get("edited_message") or {}
+        text = msg.get("text", "").strip()
+        chat_id = msg.get("chat", {}).get("id", "")
+
+        print("📨 명령어 수신:", text)
+        print("👤 chat_id:", chat_id)
+
+        if "시작" in text:
+            send_telegram("✅ 자동매매 시작!")
+        elif "상태" in text:
+            send_telegram("📈 상태: 정상 대기 중")
+
+    except Exception as e:
+        print("❌ 텔레그램 핸들러 오류:", e)
+
     return "ok", 200
+
 
 
 if __name__ == '__main__':
