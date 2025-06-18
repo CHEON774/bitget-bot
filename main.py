@@ -198,33 +198,39 @@ def start_flask():
 @app.route('/텔레그램', methods=['POST'])
 def telegram_webhook():
     data = request.json
-    msg = data.get("message", {})
-    text = msg.get("text", "")
-    if not text:
-        return "no message", 200
-    if "시작" in text:
+    if not data:
+        return "no data", 400
+
+    message = data.get("message", {})
+    text = message.get("text", "")
+    chat_id = message.get("chat", {}).get("id", "")
+    print("📥 수신 메시지:", text)
+
+    if text.startswith("/시작"):
         for s in auto_trading_enabled:
             auto_trading_enabled[s] = True
         send_telegram("✅ 자동매매 시작!")
-    elif "중지" in text:
+    elif text.startswith("/중지"):
         for s in auto_trading_enabled:
             auto_trading_enabled[s] = False
         send_telegram("🛑 자동매매 중단!")
-    elif "상태" in text:
+    elif text.startswith("/상태"):
         status = [f"{s}: {'ON' if auto_trading_enabled[s] else 'OFF'}" for s in SYMBOLS]
         send_telegram("📈 매매 상태:\n" + "\n".join(status))
-    elif "수익률" in text:
+    elif text.startswith("/수익률"):
         bal = get_account_balance()
         if bal:
             rate = ((bal - INITIAL_BALANCE) / INITIAL_BALANCE) * 100
             send_telegram(f"💰 수익률: {rate:.2f}%")
-    elif "포지션" in text:
+    elif text.startswith("/포지션"):
         for s in SYMBOLS:
             if positions[s] != 0:
                 send_telegram(f"📌 {s} {'롱' if positions[s] > 0 else '숏'} | 진입가: {entry_prices[s]:.2f}")
             else:
                 send_telegram(f"📌 {s} 포지션 없음")
+
     return "ok", 200
+
 
 if __name__ == '__main__':
     send_telegram("✅ 봇 정상시작 완료! 잔액 확인 중...")
