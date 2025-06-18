@@ -241,7 +241,11 @@ def telegram_webhook():
 
 
 if __name__ == '__main__':
+    send_telegram("✅ 봇 시작됨. 잔액 확인 중...")
     get_account_balance(send=True)
-    threading.Thread(target=start_ws).start()
+
+    # ✅ WebSocket 잠시 주석 처리
+    # threading.Thread(target=start_ws, daemon=True).start()
+
     start_flask()
 
