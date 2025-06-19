@@ -147,7 +147,7 @@ async def ws_loop():
                     "args": [{"instType": INST_TYPE, "channel": CHANNEL, "instId": s} for s in SYMBOLS]
                 }
                 await ws.send(json.dumps(sub))
-                send_telegram("🤖 모의매매 시작\n15분봉 기준 CCI(14), ADX(5) 전략 실행 중")
+                send_telegram(f"🤖 모의매매 시작\n현재 잔액: {mock_balance:.2f} USDT\n15분봉 기준 CCI(14), ADX(5) 전략 실행 중")
                 print("✅ WebSocket 연결됨")
                 while True:
                     try:
@@ -159,12 +159,12 @@ async def ws_loop():
                             simulate_trade(symbol)
                     except Exception as e:
                         print(f"❌ 메시지 오류: {e}")
-        except websockets.exceptions.ConnectionClosedError as e:
-            print(f"🔌 WebSocket 강제종료: {e}")
-            await asyncio.sleep(5)
+                        break  # 내부 루프 탈출, 아래에서 재연결 대기
         except Exception as e:
-            print(f"🔌 기타 WebSocket 오류: {e}")
-            await asyncio.sleep(5)
+            print(f"🔌 WebSocket 연결 오류: {e}")
+        # 연결 실패·오류시 잠깐 대기 후 재연결 시도
+        await asyncio.sleep(5)
+
 
 if __name__ == "__main__":
     loop = asyncio.new_event_loop()
