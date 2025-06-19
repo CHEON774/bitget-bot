@@ -1,8 +1,10 @@
-import asyncio, json, websockets, time
-from datetime import datetime
-import numpy as np
+import asyncio
+import websockets
+import json
 import threading
+import time
 import requests
+import numpy as np
 
 TELEGRAM_TOKEN = '7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU'
 TELEGRAM_CHAT_ID = '1797494660'
@@ -11,9 +13,9 @@ SYMBOLS = {
     "BTCUSDT": {"leverage": 10, "amount": 150},
     "ETHUSDT": {"leverage": 7, "amount": 120}
 }
-VIRTUAL_BALANCE = 756.0  # 초기 가상잔고
+VIRTUAL_BALANCE = 756.0
 virtual_balance = VIRTUAL_BALANCE
-positions = {sym: None for sym in SYMBOLS}  # None, "long", "short"
+positions = {sym: None for sym in SYMBOLS}
 entry_prices = {sym: None for sym in SYMBOLS}
 trailing_highs = {sym: None for sym in SYMBOLS}
 trailing_lows = {sym: None for sym in SYMBOLS}
@@ -60,7 +62,7 @@ def calc_pnl(symbol, entry, exit, side, amount):
     leverage = SYMBOLS[symbol]['leverage']
     diff = (exit - entry) if side == "long" else (entry - exit)
     rate = diff / entry
-    profit = amount * rate * leverage  # 레버리지 반영
+    profit = amount * rate * leverage
     return profit, rate * leverage * 100
 
 async def process_signal(symbol, cci_val, adx_val, close):
@@ -70,7 +72,7 @@ async def process_signal(symbol, cci_val, adx_val, close):
         if positions[symbol] == "long":
             if trailing_highs[symbol] is None or close > trailing_highs[symbol]:
                 trailing_highs[symbol] = close
-            # +3% 이상 트레일링스탑(최고가-0.5%)
+            # +3% 트레일링스탑
             if close >= entry_prices[symbol] * 1.03:
                 stop_price = trailing_highs[symbol] * 0.995
                 if close <= stop_price:
@@ -94,7 +96,6 @@ async def process_signal(symbol, cci_val, adx_val, close):
         elif positions[symbol] == "short":
             if trailing_lows[symbol] is None or close < trailing_lows[symbol]:
                 trailing_lows[symbol] = close
-            # +3% 이상 트레일링스탑(최저가+0.5%)
             if close <= entry_prices[symbol] * 0.97:
                 stop_price = trailing_lows[symbol] * 1.005
                 if close >= stop_price:
@@ -116,7 +117,7 @@ async def process_signal(symbol, cci_val, adx_val, close):
                 return
         return
 
-    # 진입 신호 (중복진입 방지)
+    # 진입 신호
     if cci_val > 100 and adx_val > 25 and positions[symbol] is None:
         positions[symbol] = "long"
         entry_prices[symbol] = close
@@ -131,36 +132,64 @@ async def process_signal(symbol, cci_val, adx_val, close):
 async def ws_loop(symbol):
     uri = "wss://ws.bitget.com/v2/ws/public"
     channel = "candle15m"
-    async with websockets.connect(uri, ping_interval=20) as ws:
-        await ws.send(json.dumps({
-            "op": "subscribe",
-            "args": [{
-                "instType": "USDT-FUTURES",
-                "channel": channel,
-                "instId": symbol
-            }]
-        }))
-        print(f"✅ {symbol} WebSocket 연결됨")
-        while True:
-            msg = json.loads(await ws.recv())
-            if msg.get("event") == "error":
-                print(f"❌ 에러: {msg}")
-                continue
-            if msg.get("action") in ["snapshot", "update"]:
-                d = msg["data"][0]
-                if len(candles_data[symbol]) > 0 and d[0] == candles_data[symbol][-1][0]:
-                    candles_data[symbol][-1] = d
-                else:
-                    candles_data[symbol].append(d)
-                if len(candles_data[symbol]) > MAX_CANDLES:
-                    candles_data[symbol] = candles_data[symbol][-MAX_CANDLES:]
-                if len(candles_data[symbol]) >= 20:
-                    cci_vals = calc_cci(candles_data[symbol], 14)
-                    adx_vals = calc_adx(candles_data[symbol], 5)
-                    latest_cci = cci_vals[-1]
-                    latest_adx = adx_vals[-1]
-                    close = float(d[4])
-                    await process_signal(symbol, latest_cci, latest_adx, close)
+    while True:
+        try:
+            async with websockets.connect(
+                uri,
+                ping_interval=None,  # 수동 핑/퐁 관리(직접 보냄)
+                close_timeout=5,
+                max_queue=32,
+                max_size=2**20,
+            ) as ws:
+                await ws.send(json.dumps({
+                    "op": "subscribe",
+                    "args": [{
+                        "instType": "USDT-FUTURES",
+                        "channel": channel,
+                        "instId": symbol
+                    }]
+                }))
+                print(f"✅ {symbol} WebSocket 연결됨")
+                last_ping = time.time()
+                while True:
+                    # 20초마다 ping 전송
+                    if time.time() - last_ping > 20:
+                        await ws.send(json.dumps({"op": "ping"}))
+                        last_ping = time.time()
+                    try:
+                        msg = await asyncio.wait_for(ws.recv(), timeout=25)
+                    except asyncio.TimeoutError:
+                        print(f"⏳ {symbol} ping/pong timeout, 재접속 시도")
+                        break  # 자동 reconnect
+                    # ping/pong 직접 관리
+                    if msg == '{"event":"pong"}' or '"pong"' in msg:
+                        continue
+                    if msg == '{"event":"ping"}' or '"ping"' in msg:
+                        await ws.send(json.dumps({"op": "pong"}))
+                        continue
+                    # 데이터 처리
+                    msg = json.loads(msg)
+                    if msg.get("event") == "error":
+                        print(f"❌ 에러: {msg}")
+                        continue
+                    if msg.get("action") in ["snapshot", "update"]:
+                        d = msg["data"][0]
+                        if len(candles_data[symbol]) > 0 and d[0] == candles_data[symbol][-1][0]:
+                            candles_data[symbol][-1] = d
+                        else:
+                            candles_data[symbol].append(d)
+                        if len(candles_data[symbol]) > MAX_CANDLES:
+                            candles_data[symbol] = candles_data[symbol][-MAX_CANDLES:]
+                        if len(candles_data[symbol]) >= 20:
+                            cci_vals = calc_cci(candles_data[symbol], 14)
+                            adx_vals = calc_adx(candles_data[symbol], 5)
+                            latest_cci = cci_vals[-1]
+                            latest_adx = adx_vals[-1]
+                            close = float(d[4])
+                            await process_signal(symbol, latest_cci, latest_adx, close)
+        except Exception as e:
+            print(f"🔁 {symbol} WebSocket 연결 종료, 5초 후 재시도... 원인: {e}")
+            await asyncio.sleep(5)
 
 def periodic_report():
     global virtual_balance
