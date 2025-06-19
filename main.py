@@ -183,5 +183,5 @@ def balance_notifier():
 
 # === 메인 ===
 if __name__ == "__main__":
-    threading.Thread(target=balance_notifier, daemon=True).start()
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=8080)).start()
     asyncio.run(ws_loop())
