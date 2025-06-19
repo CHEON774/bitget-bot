@@ -1,8 +1,8 @@
-import asyncio, json, websockets, requests, hmac, hashlib, time, base64
-from datetime import datetime, timedelta, timezone
+import asyncio, json, websockets, requests, hmac, hashlib, time
+from datetime import datetime, timedelta
 import numpy as np
 
-# === 설정 ===
+# 환경 설정
 API_KEY = 'bg_a9c07aa3168e846bfaa713fe9af79d14'
 API_SECRET = '5be628fd41dce5eff78a607f31d096a4911d4e2156b6d66a14be20f027068043'
 API_PASSPHRASE = '1q2w3e4r'
@@ -15,21 +15,26 @@ SYMBOLS = {
 }
 INST_TYPE = "USDT-FUTURES"
 CHANNEL = "candle15m"
-MAX_CANDLES = 100
+MAX_CANDLES = 150
 candles = {symbol: [] for symbol in SYMBOLS}
-positions = {}
-last_balance_check = datetime.now(timezone.utc)
+positions = {symbol: None for symbol in SYMBOLS}
+auto_trading_enabled = {symbol: True for symbol in SYMBOLS}
+consecutive_losses = {symbol: 0 for symbol in SYMBOLS}
+last_balance_check = datetime.utcnow()
 
-# === 유틸 ===
-def send_telegram(msg):
+# 텔레그램
+def send_telegram(message):
     try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                      data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            data={"chat_id": TELEGRAM_CHAT_ID, "text": message}
+        )
     except Exception as e:
-        print("❌ 텔레그램 오류:", e)
+        print("❌ 텔레그램 전송 실패:", e)
 
+# 인증 헤더
 def sign(message, secret):
-    return base64.b64encode(hmac.new(secret.encode(), message.encode(), hashlib.sha256).digest()).decode()
+    return hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
 
 def get_timestamp():
     return str(int(time.time() * 1000))
@@ -46,119 +51,162 @@ def get_headers(method, path, body=''):
         'Content-Type': 'application/json'
     }
 
-# === 주문 ===
-def place_order(symbol, side, size):
-    url = "https://api.bitget.com/api/mix/v1/order/place-order"
-    data = {
+# 잔액 조회
+def get_balance(send=False):
+    url = "https://api.bitget.com/api/mix/v1/account/account?marginCoin=USDT"
+    headers = get_headers("GET", "/api/mix/v1/account/account?marginCoin=USDT")
+    try:
+        res = requests.get(url, headers=headers)
+        data = res.json()
+        if data["code"] == "00000":
+            balance = float(data["data"]["available"])
+            if send:
+                send_telegram(f"💰 현재 잔액: {balance:.2f} USDT")
+            return balance
+    except Exception as e:
+        print("잔액 조회 실패:", e)
+        return None
+
+# 실 주문 실행
+def place_order(symbol, side, amount, leverage):
+    url = "https://api.bitget.com/api/mix/v1/order/placeOrder"
+    path = "/api/mix/v1/order/placeOrder"
+    order_type = "open_long" if side == "long" else "open_short"
+    body = {
         "symbol": symbol,
         "marginCoin": "USDT",
-        "side": side,
+        "size": str(round(amount * leverage / get_price(symbol), 3)),
+        "side": "buy" if side == "long" else "sell",
+        "tradeSide": order_type,
         "orderType": "market",
-        "size": str(size),
-        "tradeSide": side,
-        "price": "",
-        "timeInForceValue": "normal",
-        "leverage": str(SYMBOLS[symbol]["leverage"]),
-        "presetTakeProfit": "",
-        "presetStopLoss": ""
+        "leverage": str(leverage)
     }
-    headers = get_headers("POST", "/api/mix/v1/order/place-order", json.dumps(data))
-    res = requests.post(url, headers=headers, data=json.dumps(data))
-    if res.status_code == 200:
-        send_telegram(f"✅ 실 주문 전송 완료: {symbol} {side.upper()} ${SYMBOLS[symbol]['amount']}")
-    else:
-        send_telegram(f"❌ 주문 실패: {res.text}")
-
-# === 지표 ===
-def calculate_cci(prices, period=14):
-    tp = (prices[:,1] + prices[:,2] + prices[:,3]) / 3
-    ma = np.convolve(tp, np.ones(period)/period, mode='valid')
-    md = np.array([np.mean(np.abs(tp[i-period+1:i+1] - ma[i-period+1])) for i in range(period-1, len(tp))])
-    cci = (tp[period-1:] - ma) / (0.015 * md)
-    return cci
-
-def calculate_adx(prices, period=5):
-    high, low, close = prices[:,2], prices[:,3], prices[:,4]
-    plus_dm = np.where((high[1:] - high[:-1]) > (low[:-1] - low[1:]), high[1:] - high[:-1], 0)
-    minus_dm = np.where((low[:-1] - low[1:]) > (high[1:] - high[:-1]), low[:-1] - low[1:], 0)
-    tr = np.maximum(high[1:], close[:-1]) - np.minimum(low[1:], close[:-1])
-    tr_smooth = np.convolve(tr, np.ones(period)/period, mode='valid')
-    plus_di = 100 * np.convolve(plus_dm, np.ones(period)/period, mode='valid') / tr_smooth
-    minus_di = 100 * np.convolve(minus_dm, np.ones(period)/period, mode='valid') / tr_smooth
-    dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
-    adx = np.convolve(dx, np.ones(period)/period, mode='valid')
-    return adx
-
-# === 전략 ===
-def check_strategy(symbol):
-    if len(candles[symbol]) < 30:
-        return
-    prices = np.array(candles[symbol], dtype=float)
-    cci = calculate_cci(prices)[-1]
-    adx = calculate_adx(prices)[-1]
-    price = float(prices[-1][4])
-    
-    if symbol not in positions:
-        if cci > 100 and adx > 25:
-            positions[symbol] = {"side": "open_long", "entry": price, "trail": price}
-            place_order(symbol, "open_long", SYMBOLS[symbol]["amount"])
-        elif cci < -100 and adx > 25:
-            positions[symbol] = {"side": "open_short", "entry": price, "trail": price}
-            place_order(symbol, "open_short", SYMBOLS[symbol]["amount"])
-    else:
-        pos = positions[symbol]
-        entry = pos["entry"]
-        trail = pos["trail"]
-        side = pos["side"]
-        profit = (price - entry) / entry if "long" in side else (entry - price) / entry
-
-        if profit >= 0.03:
-            pos["trail"] = max(trail, price) if "long" in side else min(trail, price)
-        elif profit <= -0.02:
-            place_order(symbol, "close_long" if "long" in side else "close_short", SYMBOLS[symbol]["amount"])
-            positions.pop(symbol)
-        elif ("long" in side and price < trail * 0.995) or ("short" in side and price > trail * 1.005):
-            place_order(symbol, "close_long" if "long" in side else "close_short", SYMBOLS[symbol]["amount"])
-            positions.pop(symbol)
-
-# === WebSocket 처리 ===
-def on_message(msg):
+    headers = get_headers("POST", path, json.dumps(body))
     try:
-        data = msg["data"][0]
-        symbol = data["instId"]
-        ts = int(data["ts"])
-        k = [ts, float(data["o"]), float(data["h"]), float(data["l"]), float(data["c"]), float(data["v"])]
-        if candles[symbol] and candles[symbol][-1][0] == ts:
-            candles[symbol][-1] = k
-        else:
-            candles[symbol].append(k)
-            if len(candles[symbol]) > MAX_CANDLES:
-                candles[symbol].pop(0)
-            check_strategy(symbol)
+        res = requests.post(url, headers=headers, data=json.dumps(body))
+        data = res.json()
+        if data["code"] == "00000":
+            send_telegram(f"✅ {symbol} {side.upper()} 진입 완료")
+            return True
     except Exception as e:
-        print(f"⚠️ 메시지 처리 오류: {e}")
+        print("주문 실패:", e)
+    return False
 
-# === WebSocket 루프 ===
+def get_price(symbol):
+    url = f"https://api.bitget.com/api/mix/v1/market/ticker?symbol={symbol}&productType=USDT-FUTURES"
+    try:
+        res = requests.get(url)
+        data = res.json()
+        if data["code"] == "00000":
+            return float(data["data"]["last"])
+    except:
+        return None
+
+# 지표 계산
+def calculate_cci(data, period=14):
+    if len(data) < period:
+        return None
+    tp = [(float(d[2]) + float(d[3]) + float(d[4])) / 3 for d in data[-period:]]
+    ma = np.mean(tp)
+    md = np.mean(np.abs(tp - ma))
+    return (tp[-1] - ma) / (0.015 * md) if md != 0 else 0
+
+def calculate_adx(data, period=5):
+    if len(data) < period + 1:
+        return None
+    highs = np.array([float(d[2]) for d in data])
+    lows = np.array([float(d[3]) for d in data])
+    closes = np.array([float(d[4]) for d in data])
+    plus_dm = highs[1:] - highs[:-1]
+    minus_dm = lows[:-1] - lows[1:]
+    plus_dm = np.where(plus_dm > minus_dm, plus_dm, 0)
+    minus_dm = np.where(minus_dm > plus_dm, minus_dm, 0)
+    tr = np.maximum(highs[1:], closes[:-1]) - np.minimum(lows[1:], closes[:-1])
+    tr = np.where(tr == 0, 1e-6, tr)
+    plus_di = 100 * np.mean(plus_dm[-period:]) / np.mean(tr[-period:])
+    minus_di = 100 * np.mean(minus_dm[-period:]) / np.mean(tr[-period:])
+    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+    return dx
+
+# 전략 실행
+def strategy(symbol):
+    data = candles[symbol]
+    if len(data) < 20:
+        return
+    cci = calculate_cci(data, 14)
+    adx = calculate_adx(data, 5)
+    price = float(data[-1][4])
+    position = positions[symbol]
+
+    if position is None:
+        if cci is not None and adx is not None and adx > 25:
+            if cci > 100:
+                if place_order(symbol, "long", SYMBOLS[symbol]["amount"], SYMBOLS[symbol]["leverage"]):
+                    positions[symbol] = {"side": "long", "entry": price, "trail": False, "peak": price}
+            elif cci < -100:
+                if place_order(symbol, "short", SYMBOLS[symbol]["amount"], SYMBOLS[symbol]["leverage"]):
+                    positions[symbol] = {"side": "short", "entry": price, "trail": False, "peak": price}
+    else:
+        entry = position["entry"]
+        side = position["side"]
+        ratio = (price - entry) / entry if side == "long" else (entry - price) / entry
+
+        if not position["trail"] and ratio >= 0.03:
+            position["trail"] = True
+            position["peak"] = price
+        elif position["trail"]:
+            if side == "long":
+                position["peak"] = max(position["peak"], price)
+                if price < position["peak"] * 0.995:
+                    send_telegram(f"🔻 {symbol} LONG 트레일링 스탑 청산")
+                    positions[symbol] = None
+            else:
+                position["peak"] = min(position["peak"], price)
+                if price > position["peak"] * 1.005:
+                    send_telegram(f"🔻 {symbol} SHORT 트레일링 스탑 청산")
+                    positions[symbol] = None
+
+        if ratio <= -0.02:
+            send_telegram(f"🛑 {symbol} {side.upper()} 손절 (-2%)")
+            positions[symbol] = None
+
+# 메시지 핸들링
+def on_msg(msg):
+    try:
+        for d in msg["data"]:
+            symbol = d["instId"]
+            ts = int(d["ts"])
+            k = [ts, float(d["o"]), float(d["h"]), float(d["l"]), float(d["c"]), float(d["v"])]
+            if candles[symbol] and candles[symbol][-1][0] == ts:
+                candles[symbol][-1] = k
+            else:
+                candles[symbol].append(k)
+                if len(candles[symbol]) > MAX_CANDLES:
+                    candles[symbol].pop(0)
+                strategy(symbol)
+    except Exception as e:
+        print("⚠️ 메시지 처리 오류:", e)
+
+# WebSocket 실행
 async def ws_loop():
+    global last_balance_check
     uri = "wss://ws.bitget.com/v2/ws/public"
     async with websockets.connect(uri, ping_interval=20) as ws:
         args = [{"instType": INST_TYPE, "channel": "candle15m", "instId": s} for s in SYMBOLS]
         await ws.send(json.dumps({"op": "subscribe", "args": args}))
         print("✅ WS 연결됨 / 15분봉 구독 중")
+        get_balance(send=True)
         while True:
             try:
                 msg = json.loads(await ws.recv())
                 if "data" in msg:
-                    on_message(msg)
-
-                # 1시간마다 잔액 확인
-                global last_balance_check
-                if datetime.now(timezone.utc) - last_balance_check > timedelta(hours=1):
-                    last_balance_check = datetime.now(timezone.utc)
-                    send_telegram("🕒 1시간 경과 - 시스템 동작 중입니다.")
-
+                    on_msg(msg)
+                # 1시간마다 잔액 체크
+                if datetime.utcnow() - last_balance_check > timedelta(hours=1):
+                    get_balance(send=True)
+                    last_balance_check = datetime.utcnow()
             except Exception as e:
-                print(f"⚠️ WebSocket 오류: {e}")
+                print("⚠️ WebSocket 오류:", e)
                 await asyncio.sleep(5)
 
 if __name__ == "__main__":
