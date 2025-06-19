@@ -1,175 +1,185 @@
-import asyncio, websockets, json, numpy as np, requests
-from datetime import datetime, timedelta, timezone
+import asyncio, json, websockets, time
+from datetime import datetime
+import numpy as np
+import threading
+import requests
 
-# === 기본 설정 ===
 TELEGRAM_TOKEN = '7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU'
 TELEGRAM_CHAT_ID = '1797494660'
 
 SYMBOLS = {
-    "BTCUSDT": {"amount": 150},
-    "ETHUSDT": {"amount": 120},
+    "BTCUSDT": {"leverage": 10, "amount": 150},
+    "ETHUSDT": {"leverage": 7, "amount": 120}
 }
-CHANNEL = "candle15m"
-INST_TYPE = "USDT-FUTURES"
-MAX_CANDLES = 100
-
-CCI_PERIOD = 14
-ADX_PERIOD = 5
-ENTRY_CCI = 100
-ADX_THRESHOLD = 25
-TAKE_PROFIT = 0.03
-STOP_LOSS = -0.02
-TRAILING_GAP = 0.005
-
-candles = {s: [] for s in SYMBOLS}
-positions = {}
-trail_highs = {}
-mock_balance = 756.0
-loss_count = {s: 0 for s in SYMBOLS}
-auto_trading = {s: True for s in SYMBOLS}
-last_balance_check = datetime.now(timezone.utc)
+VIRTUAL_BALANCE = 756.0  # 시작 잔고 (가상잔고)
+virtual_balance = VIRTUAL_BALANCE
+positions = {sym: None for sym in SYMBOLS}  # None, "long", "short"
+entry_prices = {sym: None for sym in SYMBOLS}
+trailing_highs = {sym: None for sym in SYMBOLS}
+trailing_lows = {sym: None for sym in SYMBOLS}
 
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={'chat_id': TELEGRAM_CHAT_ID, 'text': msg})
-    except Exception as e:
-        print(f"❌ 텔레그램 오류: {e}")
+    requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
 
-def calculate_cci(data):
-    if len(data) < CCI_PERIOD: return None
-    try:
-        tp = (data[:,1].astype(float) + data[:,2].astype(float) + data[:,3].astype(float)) / 3
+def calc_cci(candles, period=14):
+    cci = []
+    for i in range(len(candles)):
+        if i < period-1:
+            cci.append(np.nan)
+            continue
+        slice = candles[i-period+1:i+1]
+        tp = [(float(x[1])+float(x[2])+float(x[3]))/3 for x in slice]
         ma = np.mean(tp)
-        md = np.mean(np.abs(tp - ma))
-        if md == 0: return None
-        return (tp[-1] - ma) / (0.015 * md)
-    except: return None
+        md = np.mean([abs(x-ma) for x in tp])
+        if md == 0: cci.append(0)
+        else: cci.append((tp[-1] - ma) / (0.015 * md))
+    return cci
 
-def calculate_adx(data):
-    if len(data) < ADX_PERIOD + 1: return None
-    try:
-        highs, lows, closes = data[:,2].astype(float), data[:,3].astype(float), data[:,4].astype(float)
-        tr = np.maximum(highs[1:], closes[:-1]) - np.minimum(lows[1:], closes[:-1])
-        plus_dm = np.where((highs[1:] - highs[:-1]) > (lows[:-1] - lows[1:]), highs[1:] - highs[:-1], 0)
-        minus_dm = np.where((lows[:-1] - lows[1:]) > (highs[1:] - highs[:-1]), lows[:-1] - lows[1:], 0)
-        tr_avg = np.mean(tr[-ADX_PERIOD:])
-        if tr_avg == 0: return None
-        pdi = 100 * np.mean(plus_dm[-ADX_PERIOD:]) / tr_avg
-        mdi = 100 * np.mean(minus_dm[-ADX_PERIOD:]) / tr_avg
-        if pdi + mdi == 0: return None
-        return 100 * abs(pdi - mdi) / (pdi + mdi)
-    except: return None
+def calc_adx(candles, period=5):
+    highs = np.array([float(x[2]) for x in candles])
+    lows = np.array([float(x[3]) for x in candles])
+    closes = np.array([float(x[4]) for x in candles])
+    tr = np.maximum(highs[1:] - lows[1:], np.abs(highs[1:] - closes[:-1]), np.abs(lows[1:] - closes[:-1]))
+    plus_dm = np.where((highs[1:] - highs[:-1]) > (lows[:-1] - lows[1:]), highs[1:] - highs[:-1], 0)
+    minus_dm = np.where((lows[:-1] - lows[1:]) > (highs[1:] - highs[:-1]), lows[:-1] - lows[1:], 0)
+    tr_sum = np.convolve(tr, np.ones(period), 'valid')
+    plus_di = 100 * np.convolve(plus_dm, np.ones(period), 'valid') / tr_sum
+    minus_di = 100 * np.convolve(minus_dm, np.ones(period), 'valid') / tr_sum
+    dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
+    adx = np.convolve(dx, np.ones(period), 'valid') / period
+    result = [np.nan]*(2*period-2) + list(adx)
+    return result
 
-def update_candle(symbol, candle):
-    candles[symbol].append(candle)
-    if len(candles[symbol]) > MAX_CANDLES:
-        candles[symbol].pop(0)
+MAX_CANDLES = 150
+candles_data = {sym: [] for sym in SYMBOLS}
 
-def simulate_trade(symbol):
-    global mock_balance
-    if not auto_trading[symbol]:
+# --- 가상매매 핵심: 수익/손실 계산 및 잔고 변동 ---
+def calc_pnl(symbol, entry, exit, side, amount):
+    # 실매매 레버리지 포함 X, 단순 퍼센트만 계산 (실제 잔고 관리)
+    diff = (exit - entry) if side == "long" else (entry - exit)
+    rate = diff / entry
+    profit = amount * rate
+    return profit, rate * 100
+
+async def process_signal(symbol, cci_val, adx_val, close):
+    global virtual_balance
+    # 이미 포지션 있으면 청산 조건만 감시
+    if positions[symbol]:
+        # 트레일링 스탑
+        if positions[symbol] == "long":
+            if trailing_highs[symbol] is None or close > trailing_highs[symbol]:
+                trailing_highs[symbol] = close
+            # +3% 넘으면 최고가-0.5% 이탈시 청산
+            if close >= entry_prices[symbol] * 1.03:
+                stop_price = trailing_highs[symbol] * 0.995
+                if close <= stop_price:
+                    profit, rate = calc_pnl(symbol, entry_prices[symbol], close, "long", SYMBOLS[symbol]['amount'])
+                    virtual_balance += profit
+                    send_telegram(f"🔔 [롱 트레일링스탑] {symbol} 청산: {close:.2f}\n수익률: {rate:.2f}%\n가상잔고: {virtual_balance:.2f}")
+                    positions[symbol] = None
+                    entry_prices[symbol] = None
+                    trailing_highs[symbol] = None
+                    return
+            # -2% 손절
+            if close <= entry_prices[symbol] * 0.98:
+                profit, rate = calc_pnl(symbol, entry_prices[symbol], close, "long", SYMBOLS[symbol]['amount'])
+                virtual_balance += profit
+                send_telegram(f"❌ [롱 손절] {symbol} 청산: {close:.2f}\n수익률: {rate:.2f}%\n가상잔고: {virtual_balance:.2f}")
+                positions[symbol] = None
+                entry_prices[symbol] = None
+                trailing_highs[symbol] = None
+                return
+        elif positions[symbol] == "short":
+            if trailing_lows[symbol] is None or close < trailing_lows[symbol]:
+                trailing_lows[symbol] = close
+            # +3% 넘으면 최저가+0.5% 이탈시 청산
+            if close <= entry_prices[symbol] * 0.97:
+                stop_price = trailing_lows[symbol] * 1.005
+                if close >= stop_price:
+                    profit, rate = calc_pnl(symbol, entry_prices[symbol], close, "short", SYMBOLS[symbol]['amount'])
+                    virtual_balance += profit
+                    send_telegram(f"🔔 [숏 트레일링스탑] {symbol} 청산: {close:.2f}\n수익률: {rate:.2f}%\n가상잔고: {virtual_balance:.2f}")
+                    positions[symbol] = None
+                    entry_prices[symbol] = None
+                    trailing_lows[symbol] = None
+                    return
+            # -2% 손절
+            if close >= entry_prices[symbol] * 1.02:
+                profit, rate = calc_pnl(symbol, entry_prices[symbol], close, "short", SYMBOLS[symbol]['amount'])
+                virtual_balance += profit
+                send_telegram(f"❌ [숏 손절] {symbol} 청산: {close:.2f}\n수익률: {rate:.2f}%\n가상잔고: {virtual_balance:.2f}")
+                positions[symbol] = None
+                entry_prices[symbol] = None
+                trailing_lows[symbol] = None
+                return
         return
 
-    np_data = np.array(candles[symbol])
-    if len(np_data) < CCI_PERIOD or len(np_data) < ADX_PERIOD + 1: return
+    # 진입 신호
+    if cci_val > 100 and adx_val > 25:
+        positions[symbol] = "long"
+        entry_prices[symbol] = close
+        trailing_highs[symbol] = close
+        send_telegram(f"🚀 [롱 진입] {symbol}\n진입가: {close:.2f}\nCCI:{cci_val:.1f}, ADX:{adx_val:.1f}\n가상잔고: {virtual_balance:.2f}")
+    elif cci_val < -100 and adx_val > 25:
+        positions[symbol] = "short"
+        entry_prices[symbol] = close
+        trailing_lows[symbol] = close
+        send_telegram(f"🔥 [숏 진입] {symbol}\n진입가: {close:.2f}\nCCI:{cci_val:.1f}, ADX:{adx_val:.1f}\n가상잔고: {virtual_balance:.2f}")
 
-    cci = calculate_cci(np_data[-CCI_PERIOD:])
-    adx = calculate_adx(np_data[-ADX_PERIOD-1:])
-    price = float(np_data[-1][4])
-
-    # === 포지션 청산/관리 ===
-    if symbol in positions:
-        entry = positions[symbol]['entry']
-        side = positions[symbol]['side']
-        amt = SYMBOLS[symbol]['amount']
-        qty = amt / entry
-        pnl_ratio = (price - entry) / entry if side == 'long' else (entry - price) / entry
-
-        # 트레일링 스탑 관리
-        if side == 'long':
-            trail_highs[symbol] = max(trail_highs[symbol], price)
-            stop_out = price < trail_highs[symbol] * (1 - TRAILING_GAP)
-        else:
-            trail_highs[symbol] = min(trail_highs[symbol], price)
-            stop_out = price > trail_highs[symbol] * (1 + TRAILING_GAP)
-
-        if pnl_ratio >= TAKE_PROFIT or pnl_ratio <= STOP_LOSS or stop_out:
-            pnl = pnl_ratio * amt
-            mock_balance += pnl
-            result = "익절" if pnl > 0 else "손절"
-            if pnl < 0:
-                loss_count[symbol] += 1
-                if loss_count[symbol] >= 3:
-                    auto_trading[symbol] = False
-                    send_telegram(f"⛔ {symbol} 3회 손절로 자동매매 중단")
-            send_telegram(f"💥 {symbol} {side.upper()} 청산 @ {price:.2f} | {result} | 손익: {pnl:.2f} | 잔액: {mock_balance:.2f}")
-            del positions[symbol]
-            if symbol in trail_highs:
-                del trail_highs[symbol]
-        return
-
-    # === 신규 진입 ===
-    if cci is None or adx is None or adx < ADX_THRESHOLD:
-        return
-    amt = SYMBOLS[symbol]['amount']
-    qty = amt / price
-    if cci > ENTRY_CCI:
-        positions[symbol] = {'entry': price, 'side': 'long'}
-        trail_highs[symbol] = price
-        send_telegram(f"🟢 롱 진입: {symbol} @ {price:.2f}")
-    elif cci < -ENTRY_CCI:
-        positions[symbol] = {'entry': price, 'side': 'short'}
-        trail_highs[symbol] = price
-        send_telegram(f"🔴 숏 진입: {symbol} @ {price:.2f}")
-
-async def periodic_alert():
-    global last_balance_check
-    while True:
-        await asyncio.sleep(60)
-        now = datetime.now(timezone.utc)
-        if now - last_balance_check > timedelta(hours=1):
-            last_balance_check = now
-            msg = f"⏰ 1시간 잔액 리포트\n💰 잔액: {mock_balance:.2f} USDT\n"
-            for sym in SYMBOLS:
-                pos = positions.get(sym)
-                if pos:
-                    msg += f"{sym}: {pos['side']} 진입 @ {pos['entry']:.2f}\n"
-            send_telegram(msg)
-
-async def ws_loop():
+async def ws_loop(symbol):
     uri = "wss://ws.bitget.com/v2/ws/public"
-    while True:
-        try:
-            async with websockets.connect(uri, ping_interval=20) as ws:
-                sub = {
-                    "op": "subscribe",
-                    "args": [{"instType": INST_TYPE, "channel": CHANNEL, "instId": s} for s in SYMBOLS]
-                }
-                await ws.send(json.dumps(sub))
-                send_telegram(f"🤖 모의매매 시작\n현재 잔액: {mock_balance:.2f} USDT\n15분봉 기준 CCI(14), ADX(5) 전략 실행 중")
-                print("✅ WebSocket 연결됨")
-                while True:
-                    try:
-                        msg = json.loads(await ws.recv())
-                        if msg.get("action") in ["snapshot", "update"]:
-                            symbol = msg['arg']['instId']
-                            candle = msg['data'][0]
-                            update_candle(symbol, candle)
-                            simulate_trade(symbol)
-                    except Exception as e:
-                        print(f"❌ 메시지 오류: {e}")
-                        break  # 내부 루프 탈출, 아래에서 재연결 대기
-        except Exception as e:
-            print(f"🔌 WebSocket 연결 오류: {e}")
-        # 연결 실패·오류시 잠깐 대기 후 재연결 시도
-        await asyncio.sleep(5)
+    channel = "candle15m"
+    async with websockets.connect(uri, ping_interval=20) as ws:
+        await ws.send(json.dumps({
+            "op": "subscribe",
+            "args": [{
+                "instType": "USDT-FUTURES",
+                "channel": channel,
+                "instId": symbol
+            }]
+        }))
+        print(f"✅ {symbol} WebSocket 연결됨")
+        while True:
+            msg = json.loads(await ws.recv())
+            if msg.get("event") == "error":
+                print(f"❌ 에러: {msg}")
+                continue
+            if msg.get("action") in ["snapshot", "update"]:
+                d = msg["data"][0]
+                # [timestamp, open, high, low, close, vol]
+                if len(candles_data[symbol]) > 0 and d[0] == candles_data[symbol][-1][0]:
+                    candles_data[symbol][-1] = d
+                else:
+                    candles_data[symbol].append(d)
+                if len(candles_data[symbol]) > MAX_CANDLES:
+                    candles_data[symbol] = candles_data[symbol][-MAX_CANDLES:]
+                if len(candles_data[symbol]) >= 20:
+                    cci_vals = calc_cci(candles_data[symbol], 14)
+                    adx_vals = calc_adx(candles_data[symbol], 5)
+                    latest_cci = cci_vals[-1]
+                    latest_adx = adx_vals[-1]
+                    close = float(d[4])
+                    await process_signal(symbol, latest_cci, latest_adx, close)
 
+def periodic_report():
+    global virtual_balance
+    while True:
+        msg = "[1시간마다 리포트]\n"
+        for symbol in SYMBOLS:
+            pos = positions[symbol]
+            entry = entry_prices[symbol]
+            msg += f"{symbol} | 포지션: {pos or '-'} | 진입가: {entry or '-'}\n"
+        msg += f"현재 가상잔고: {virtual_balance:.2f}\n"
+        send_telegram(msg)
+        time.sleep(3600)
+
+def start_all():
+    send_telegram(f"✅ 가상매매 봇 시작!\n초기잔고: {virtual_balance}\n전략: 15분봉, CCI(14)+ADX(5)\n롱: CCI>100/ADX>25, 숏: CCI<-100/ADX>25\n익절+3%→트레일링스탑(-0.5%), 손절-2%")
+    for symbol in SYMBOLS:
+        threading.Thread(target=lambda: asyncio.run(ws_loop(symbol))).start()
+    threading.Thread(target=periodic_report, daemon=True).start()
 
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.create_task(ws_loop())
-    loop.create_task(periodic_alert())
-    loop.run_forever()
+    start_all()
 
