@@ -1,137 +1,143 @@
-# 기준 코드에 실주문만 추가한 최종본
-import asyncio, json, websockets, hmac, hashlib, requests, time
-from datetime import datetime
-import numpy as np
+import asyncio, json, websockets, numpy as np, time
+from datetime import datetime, timedelta
+import requests
 
-API_KEY = "bg_a9c07aa3168e846bfaa713fe9af79d14"
-API_SECRET = "5be628fd41dce5eff78a607f31d096a4911d4e2156b6d66a14be20f027068043"
-API_PASSPHRASE = "1q2w3e4r"
-TELEGRAM_TOKEN = "7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU"
-TELEGRAM_CHAT_ID = "1797494660"
+TELEGRAM_TOKEN = '7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU'
+TELEGRAM_CHAT_ID = '1797494660'
 
 SYMBOLS = {
-    "BTCUSDT": {"leverage": 10, "amount": 150},
-    "ETHUSDT": {"leverage": 7, "amount": 120}
+    'BTCUSDT': {'amount': 150},
+    'ETHUSDT': {'amount': 120}
 }
-INST_TYPE = "USDT-FUTURES"
-CHANNEL = "candle15m"
-MAX_CANDLES = 150
 
-candles = {s: [] for s in SYMBOLS}
+CHANNEL = 'candle15m'
+INST_TYPE = 'USDT-FUTURES'
+MAX_CANDLES = 100
+
+ENTRY_CCI = 100
+STOP_LOSS = -0.02
+TAKE_PROFIT = 0.03
+TRAILING_GAP = 0.005
+
+candles, positions = {s: [] for s in SYMBOLS}, {}
 cci_values, adx_values, last_prices = {}, {}, {}
-positions, trail_highs = {}, {}
+trail_highs = {}
+mock_balance = 756
+loss_count = {s: 0 for s in SYMBOLS}
+auto_trading = {s: True for s in SYMBOLS}
+last_balance_check = datetime.utcnow()
 
-def send_telegram(text):
+async def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
-    except:
-        pass
-
-def get_timestamp():
-    return str(int(time.time() * 1000))
-
-def sign_request(timestamp, method, path, body=""):
-    msg = f"{timestamp}{method}{path}{body}"
-    return hmac.new(API_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
-
-def place_market_order(symbol, side, size):
-    url_path = "/api/mix/v1/order/place"
-    timestamp = get_timestamp()
-    body = json.dumps({
-        "symbol": symbol,
-        "marginCoin": "USDT",
-        "size": str(size),
-        "side": side,
-        "orderType": "market",
-        "tradeSide": side,
-        "productType": "umcbl"
-    })
-    sign = sign_request(timestamp, "POST", url_path, body)
-    headers = {
-        "ACCESS-KEY": API_KEY,
-        "ACCESS-SIGN": sign,
-        "ACCESS-TIMESTAMP": timestamp,
-        "ACCESS-PASSPHRASE": API_PASSPHRASE,
-        "Content-Type": "application/json"
-    }
-    try:
-        res = requests.post("https://api.bitget.com" + url_path, headers=headers, data=body).json()
-        print(f"🛒 주문 응답: {res}")
-        return res
-    except Exception as e:
-        print(f"❌ 주문 실패: {e}")
-        return None
+        requests.post(url, data={'chat_id': TELEGRAM_CHAT_ID, 'text': msg})
+    except: pass
 
 def calculate_cci(data):
     try:
-        tps = [(float(o)+float(h)+float(l))/3 for o,h,l in zip(data[:,1], data[:,2], data[:,3])]
-        ma = np.mean(tps)
-        md = np.mean(np.abs(tps - ma))
-        return (tps[-1] - ma) / (0.015 * md)
-    except:
-        return None
+        tp = [(float(o)+float(h)+float(l))/3 for o,h,l in zip(data[:,1], data[:,2], data[:,3])]
+        ma = np.mean(tp)
+        md = np.mean(np.abs(tp - ma))
+        return (tp[-1] - ma) / (0.015 * md)
+    except: return None
 
 def calculate_adx(data):
     try:
-        highs, lows, closes = data[:,2].astype(float), data[:,3].astype(float), data[:,4].astype(float)
-        tr = np.maximum(highs[1:], closes[:-1]) - np.minimum(lows[1:], closes[:-1])
-        plus_dm = np.where((highs[1:] - highs[:-1]) > (lows[:-1] - lows[1:]), highs[1:] - highs[:-1], 0)
-        minus_dm = np.where((lows[:-1] - lows[1:]) > (highs[1:] - highs[:-1]), lows[:-1] - lows[1:], 0)
-        tr_avg = np.mean(tr[-5:])
-        plus_di = 100 * (np.mean(plus_dm[-5:]) / tr_avg)
-        minus_di = 100 * (np.mean(minus_dm[-5:]) / tr_avg)
-        return 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-    except:
-        return None
+        high, low, close = data[:,2].astype(float), data[:,3].astype(float), data[:,4].astype(float)
+        tr = np.maximum(high[1:], close[:-1]) - np.minimum(low[1:], close[:-1])
+        pdm = np.where((high[1:] - high[:-1]) > (low[:-1] - low[1:]), high[1:] - high[:-1], 0)
+        mdm = np.where((low[:-1] - low[1:]) > (high[1:] - high[:-1]), low[:-1] - low[1:], 0)
+        trn, pdin, mdin = np.mean(tr[-5:]), np.mean(pdm[-5:]), np.mean(mdm[-5:])
+        pdi, mdi = 100 * pdin / trn, 100 * mdin / trn
+        return 100 * abs(pdi - mdi) / (pdi + mdi)
+    except: return None
+
+def update_candle(symbol, c):
+    candles[symbol].append(c)
+    if len(candles[symbol]) > MAX_CANDLES:
+        candles[symbol].pop(0)
+    np_candles = np.array(candles[symbol])
+    cci_values[symbol] = calculate_cci(np_candles[-15:])
+    adx_values[symbol] = calculate_adx(np_candles[-6:])
+    last_prices[symbol] = float(c[4])
+
+def simulate_trade(symbol):
+    global mock_balance
+    if not auto_trading[symbol]:
+        return
+
+    price = last_prices.get(symbol)
+    cci = cci_values.get(symbol)
+    adx = adx_values.get(symbol)
+
+    if symbol in positions:
+        entry = positions[symbol]['entry']
+        side = positions[symbol]['side']
+        amt = SYMBOLS[symbol]['amount']
+        size = amt / entry
+        profit_ratio = (price - entry) / entry if side == 'long' else (entry - price) / entry
+
+        if profit_ratio >= TAKE_PROFIT:
+            trail_highs[symbol] = max(trail_highs[symbol], price) if side == 'long' else min(trail_highs[symbol], price)
+
+        if profit_ratio <= STOP_LOSS or \
+          (symbol in trail_highs and (
+            (side == 'long' and price < trail_highs[symbol]*(1 - TRAILING_GAP)) or 
+            (side == 'short' and price > trail_highs[symbol]*(1 + TRAILING_GAP))
+          )):
+            pnl = profit_ratio * amt
+            mock_balance += pnl
+            result = "익절" if pnl > 0 else "손절"
+            if pnl < 0:
+                loss_count[symbol] += 1
+                if loss_count[symbol] >= 3:
+                    auto_trading[symbol] = False
+                    asyncio.create_task(send_telegram(f"⛔ {symbol} 3회 손절로 자동매매 중단"))
+
+            asyncio.create_task(send_telegram(f"💥 {symbol} {side.upper()} 청산 @ {price:.2f} | {result} | 잔액: {mock_balance:.2f}"))
+            del positions[symbol]
+            if symbol in trail_highs:
+                del trail_highs[symbol]
+        return
+
+    if cci is None or adx is None or adx < 25:
+        return
+
+    amt = SYMBOLS[symbol]['amount']
+    size = amt / price
+    if cci > ENTRY_CCI:
+        positions[symbol] = {'entry': price, 'side': 'long'}
+        trail_highs[symbol] = price
+        asyncio.create_task(send_telegram(f"🟢 롱 진입: {symbol} @ {price:.2f}"))
+    elif cci < -ENTRY_CCI:
+        positions[symbol] = {'entry': price, 'side': 'short'}
+        trail_highs[symbol] = price
+        asyncio.create_task(send_telegram(f"🔴 숏 진입: {symbol} @ {price:.2f}"))
 
 def on_msg(msg):
     try:
-        if "data" not in msg: return
-        arg = msg.get("arg", {})
-        symbol = arg.get("instId")
-        d = msg["data"][0]
-        candles[symbol].append(d)
-        if len(candles[symbol]) > MAX_CANDLES:
-            candles[symbol].pop(0)
-        np_data = np.array(candles[symbol])
-        cci = calculate_cci(np_data[-14:])
-        adx = calculate_adx(np_data[-6:])
-        price = float(d[4])
-        cci_values[symbol], adx_values[symbol], last_prices[symbol] = cci, adx, price
-
-        conf = SYMBOLS[symbol]
-        size = round(conf["amount"] * conf["leverage"] / price, 4)
-
-        if symbol not in positions:
-            if adx is not None and adx > 25:
-                if cci is not None and cci > 100:
-                    place_market_order(symbol, "open_long", size)
-                    positions[symbol] = {"entry": price, "size": size, "side": "open_long"}
-                    trail_highs[symbol] = price
-                    send_telegram(f"🟢 롱 진입: {symbol} @ {price}")
-                elif cci is not None and cci < -100:
-                    place_market_order(symbol, "open_short", size)
-                    positions[symbol] = {"entry": price, "size": size, "side": "open_short"}
-                    trail_highs[symbol] = price
-                    send_telegram(f"🔴 숏 진입: {symbol} @ {price}")
-        else:
-            entry = positions[symbol]["entry"]
-            side = positions[symbol]["side"]
-            profit = (price - entry) / entry if side == "open_long" else (entry - price) / entry
-            trail = trail_highs[symbol]
-            if profit >= 0.03:
-                trail_highs[symbol] = max(trail, price) if side == "open_long" else min(trail, price)
-            if profit <= -0.02 or (profit >= 0.03 and (
-                (side == "open_long" and price < trail * 0.995) or
-                (side == "open_short" and price > trail * 1.005)
-            )):
-                place_market_order(symbol, "close_long" if side == "open_long" else "close_short", positions[symbol]["size"])
-                send_telegram(f"📤 청산 완료: {symbol} @ {price}")
-                del positions[symbol], trail_highs[symbol]
-
+        if 'data' in msg and isinstance(msg['data'], list):
+            arg = msg.get('arg', {})
+            symbol = arg.get('instId')
+            c = msg['data'][0]
+            if symbol and c:
+                update_candle(symbol, c)
+                simulate_trade(symbol)
     except Exception as e:
-        print(f"⚠️ 메시지 처리 오류: {e}")
+        print(f"❌ 메시지 오류: {e}")
+
+async def periodic_alert():
+    global last_balance_check
+    while True:
+        await asyncio.sleep(60)
+        if datetime.utcnow() - last_balance_check > timedelta(hours=1):
+            last_balance_check = datetime.utcnow()
+            msg = f"⏰ 1시간마다 잔액 알림\n💰 현재 모의 잔액: {mock_balance:.2f}\n"
+            for sym in SYMBOLS:
+                pos = positions.get(sym)
+                if pos:
+                    msg += f"{sym}: {pos['side']} 진입 @ {pos['entry']:.2f}\n"
+            await send_telegram(msg)
 
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
@@ -141,12 +147,20 @@ async def ws_loop():
             "args": [{"instType": INST_TYPE, "channel": CHANNEL, "instId": s} for s in SYMBOLS]
         }
         await ws.send(json.dumps(sub))
-        print("✅ WS 연결됨 / 15분봉 구독 중")
+        print("✅ WebSocket 연결됨")
+        await send_telegram("🤖 모의 매매 시작\n15분봉 기준 CCI(14), ADX(5) 전략 실행 중")
         while True:
-            msg = json.loads(await ws.recv())
-            if msg.get("action") in ("snapshot", "update"):
-                on_msg(msg)
+            try:
+                msg = json.loads(await ws.recv())
+                if msg.get("action") in ["snapshot", "update"]:
+                    on_msg(msg)
+            except Exception as e:
+                print(f"🔌 WS 오류: {e}")
+                await asyncio.sleep(5)
 
 if __name__ == "__main__":
-    asyncio.run(ws_loop())
+    loop = asyncio.get_event_loop()
+    loop.create_task(ws_loop())
+    loop.create_task(periodic_alert())
+    loop.run_forever()
 
