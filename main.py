@@ -1,6 +1,5 @@
 import asyncio, json, websockets, hmac, hashlib, time, requests, numpy as np
 from datetime import datetime
-from threading import Thread
 
 # === 기본 설정 ===
 SYMBOLS = {
@@ -12,9 +11,7 @@ CHANNEL = "candle15m"
 MAX_CANDLES = 100
 candles = {symbol: [] for symbol in SYMBOLS}
 position_data = {symbol: None for symbol in SYMBOLS}
-trail_data = {symbol: None for symbol in SYMBOLS}
 
-# === API 인증 정보 ===
 API_KEY = "bg_a9c07aa3168e846bfaa713fe9af79d14"
 API_SECRET = "5be628fd41dce5eff78a607f31d096a4911d4e2156b6d66a14be20f027068043"
 API_PASSPHRASE = "1q2w3e4r"
@@ -120,17 +117,17 @@ def on_msg(msg):
 
 # === WebSocket 실행 ===
 async def ws_loop():
-    uri = "wss://ws.bitget.com/ws/public"  # ✅ v1 주소로 수정
+    uri = "wss://ws.bitget.com/ws/public"  # ✅ v1 주소 사용
     async with websockets.connect(uri, ping_interval=20) as ws:
         args = [{"instType": INST_TYPE, "channel": CHANNEL, "instId": s} for s in SYMBOLS]
         await ws.send(json.dumps({"op": "subscribe", "args": args}))
         print("✅ WS 연결됨 / candle15m 구독 시도")
         while True:
             msg = json.loads(await ws.recv())
-            if msg.get("action") in ["snapshot", "update"]:
+            if "data" in msg:
                 on_msg(msg)
 
 # === 실행 ===
 if __name__ == "__main__":
-    Thread(target=lambda: asyncio.run(ws_loop())).start()
+    asyncio.run(ws_loop())
 
