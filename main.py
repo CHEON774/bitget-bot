@@ -120,7 +120,7 @@ def on_msg(msg):
 
 # === WebSocket 실행 ===
 async def ws_loop():
-    uri = "wss://ws.bitget.com/v2/ws/public"
+    uri = "wss://ws.bitget.com/ws/public"  # ✅ v1 주소로 수정
     async with websockets.connect(uri, ping_interval=20) as ws:
         args = [{"instType": INST_TYPE, "channel": CHANNEL, "instId": s} for s in SYMBOLS]
         await ws.send(json.dumps({"op": "subscribe", "args": args}))
