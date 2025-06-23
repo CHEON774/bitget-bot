@@ -1,219 +1,182 @@
-import asyncio
-import websockets
-import json
+import asyncio, json, websockets, numpy as np, requests
+from datetime import datetime
+from flask import Flask, request
 import threading
-import time
-import requests
-import numpy as np
+import pandas as pd  # <-- 꼭 상단에서 import!
 
-TELEGRAM_TOKEN = '7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU'
-TELEGRAM_CHAT_ID = '1797494660'
-
+# === 설정 ===
 SYMBOLS = {
     "BTCUSDT": {"leverage": 10, "amount": 150},
     "ETHUSDT": {"leverage": 7, "amount": 120}
 }
-VIRTUAL_BALANCE = 756.0
-virtual_balance = VIRTUAL_BALANCE
-positions = {sym: None for sym in SYMBOLS}
-entry_prices = {sym: None for sym in SYMBOLS}
-trailing_highs = {sym: None for sym in SYMBOLS}
-trailing_lows = {sym: None for sym in SYMBOLS}
-MAX_CANDLES = 150
-candles_data = {sym: [] for sym in SYMBOLS}
+BALANCE = 756.0
+positions = {s: None for s in SYMBOLS}
+trade_enabled = {s: True for s in SYMBOLS}
+running_flag = True
+
+TELEGRAM_TOKEN = "7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU"
+TELEGRAM_CHAT_ID = "1797494660"
 
 def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
-    except Exception as e:
-        print("텔레그램 전송 오류:", e)
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
+        requests.post(url, data=data)
+    except: pass
 
-def calc_cci(candles, period=14):
-    cci = []
-    for i in range(len(candles)):
-        if i < period-1:
-            cci.append(np.nan)
-            continue
-        slice = candles[i-period+1:i+1]
-        tp = [(float(x[1])+float(x[2])+float(x[3]))/3 for x in slice]
-        ma = np.mean(tp)
-        md = np.mean([abs(x-ma) for x in tp])
-        if md == 0: cci.append(0)
-        else: cci.append((tp[-1] - ma) / (0.015 * md))
-    return cci
+# === 지표 계산 ===
+def calc_cci(df, period=14):
+    tp = (df[:,1] + df[:,2] + df[:,3]) / 3
+    if len(tp) < period: return np.full(len(tp), np.nan)
+    ma = np.convolve(tp, np.ones(period)/period, mode='valid')
+    md = np.array([np.mean(np.abs(tp[i-period+1:i+1] - ma[i-period+1])) for i in range(period-1, len(tp))])
+    cci = (tp[period-1:] - ma) / (0.015 * md)
+    return np.concatenate([np.full(period-1, np.nan), cci])
 
-def calc_adx(candles, period=5):
-    highs = np.array([float(x[2]) for x in candles])
-    lows = np.array([float(x[3]) for x in candles])
-    closes = np.array([float(x[4]) for x in candles])
-    tr = np.maximum(highs[1:] - lows[1:], np.abs(highs[1:] - closes[:-1]), np.abs(lows[1:] - closes[:-1]))
-    plus_dm = np.where((highs[1:] - highs[:-1]) > (lows[:-1] - lows[1:]), highs[1:] - highs[:-1], 0)
-    minus_dm = np.where((lows[:-1] - lows[1:]) > (highs[1:] - highs[:-1]), lows[:-1] - lows[1:], 0)
-    tr_sum = np.convolve(tr, np.ones(period), 'valid')
-    plus_di = 100 * np.convolve(plus_dm, np.ones(period), 'valid') / tr_sum
-    minus_di = 100 * np.convolve(minus_dm, np.ones(period), 'valid') / tr_sum
+def calc_adx(df, period=5):
+    high, low, close = df[:,2], df[:,3], df[:,4]
+    if len(close) <= period+2: return np.full(len(close), np.nan)
+    plus_dm = np.where(high[1:] - high[:-1] > low[:-1] - low[1:], np.maximum(high[1:] - high[:-1], 0), 0)
+    minus_dm = np.where(low[:-1] - low[1:] > high[1:] - high[:-1], np.maximum(low[:-1] - low[1:], 0), 0)
+    tr = np.maximum.reduce([high[1:] - low[1:], np.abs(high[1:] - close[:-1]), np.abs(low[1:] - close[:-1])])
+    atr = np.convolve(tr, np.ones(period)/period, mode='valid')
+    plus_di = 100 * np.convolve(plus_dm, np.ones(period)/period, mode='valid') / atr
+    minus_di = 100 * np.convolve(minus_dm, np.ones(period)/period, mode='valid') / atr
     dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
-    adx = np.convolve(dx, np.ones(period), 'valid') / period
-    result = [np.nan]*(2*period-2) + list(adx)
-    return result
+    adx = np.convolve(dx, np.ones(period)/period, mode='valid')
+    pad = len(close) - len(adx)
+    return np.concatenate([np.full(pad, np.nan), adx])
 
-def calc_pnl(symbol, entry, exit, side, amount):
-    leverage = SYMBOLS[symbol]['leverage']
-    diff = (exit - entry) if side == "long" else (entry - exit)
-    rate = diff / entry
-    profit = amount * rate * leverage
-    return profit, rate * leverage * 100
+def calc_macd_hist(close):
+    if len(close) < 26:
+        return np.full(len(close), np.nan)
+    ema12 = pd.Series(close).ewm(span=12).mean()
+    ema26 = pd.Series(close).ewm(span=26).mean()
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9).mean()
+    hist = macd - signal
+    return hist.values
 
-async def process_signal(symbol, cci_val, adx_val, close):
-    global virtual_balance
-    if positions[symbol]:
-        # 롱
-        if positions[symbol] == "long":
-            if trailing_highs[symbol] is None or close > trailing_highs[symbol]:
-                trailing_highs[symbol] = close
-            # +3% 트레일링스탑
-            if close >= entry_prices[symbol] * 1.03:
-                stop_price = trailing_highs[symbol] * 0.995
-                if close <= stop_price:
-                    profit, rate = calc_pnl(symbol, entry_prices[symbol], close, "long", SYMBOLS[symbol]['amount'])
-                    virtual_balance += profit
-                    send_telegram(f"🔔 [롱 트레일링스탑] {symbol} 청산: {close:.2f}\n레버리지 수익률: {rate:.2f}%\n수익: {profit:.2f} USDT\n가상잔고: {virtual_balance:.2f}")
-                    positions[symbol] = None
-                    entry_prices[symbol] = None
-                    trailing_highs[symbol] = None
-                    return
-            # -2% 손절
-            if close <= entry_prices[symbol] * 0.98:
-                profit, rate = calc_pnl(symbol, entry_prices[symbol], close, "long", SYMBOLS[symbol]['amount'])
-                virtual_balance += profit
-                send_telegram(f"❌ [롱 손절] {symbol} 청산: {close:.2f}\n레버리지 수익률: {rate:.2f}%\n손익: {profit:.2f} USDT\n가상잔고: {virtual_balance:.2f}")
-                positions[symbol] = None
-                entry_prices[symbol] = None
-                trailing_highs[symbol] = None
-                return
-        # 숏
-        elif positions[symbol] == "short":
-            if trailing_lows[symbol] is None or close < trailing_lows[symbol]:
-                trailing_lows[symbol] = close
-            if close <= entry_prices[symbol] * 0.97:
-                stop_price = trailing_lows[symbol] * 1.005
-                if close >= stop_price:
-                    profit, rate = calc_pnl(symbol, entry_prices[symbol], close, "short", SYMBOLS[symbol]['amount'])
-                    virtual_balance += profit
-                    send_telegram(f"🔔 [숏 트레일링스탑] {symbol} 청산: {close:.2f}\n레버리지 수익률: {rate:.2f}%\n수익: {profit:.2f} USDT\n가상잔고: {virtual_balance:.2f}")
-                    positions[symbol] = None
-                    entry_prices[symbol] = None
-                    trailing_lows[symbol] = None
-                    return
-            # -2% 손절
-            if close >= entry_prices[symbol] * 1.02:
-                profit, rate = calc_pnl(symbol, entry_prices[symbol], close, "short", SYMBOLS[symbol]['amount'])
-                virtual_balance += profit
-                send_telegram(f"❌ [숏 손절] {symbol} 청산: {close:.2f}\n레버리지 수익률: {rate:.2f}%\n손익: {profit:.2f} USDT\n가상잔고: {virtual_balance:.2f}")
-                positions[symbol] = None
-                entry_prices[symbol] = None
-                trailing_lows[symbol] = None
-                return
+# === 진입 / 청산 시뮬레이션 ===
+def open_position(symbol, side, entry_price):
+    conf = SYMBOLS[symbol]
+    qty = round(conf["amount"] / entry_price, 6)
+    positions[symbol] = {
+        "side": side, "entry_price": entry_price, "qty": qty,
+        "highest": entry_price, "lowest": entry_price
+    }
+    send_telegram(f"🚀 {symbol} {side.upper()} 진입 @ {entry_price}")
+
+def close_position(symbol, price, reason):
+    global BALANCE
+    pos = positions[symbol]
+    if not pos: return
+    side = pos["side"]
+    pnl_pct = (price - pos["entry_price"]) / pos["entry_price"]
+    if side == "short": pnl_pct *= -1
+    profit = SYMBOLS[symbol]["amount"] * pnl_pct
+    BALANCE += profit
+    positions[symbol] = None
+    send_telegram(f"💸 {symbol} 포지션 청산 @ {price}\n수익률: {pnl_pct*100:.2f}% / 잔액: ${BALANCE:.2f} / 사유: {reason}")
+
+# === WebSocket 루프 ===
+candles = {"BTCUSDT": [], "ETHUSDT": []}
+
+def on_msg(symbol, d):
+    ts = int(d[0])
+    o, h, l, c, v = map(float, d[1:6])
+    now = datetime.fromtimestamp(ts/1000)
+    print(f"[{symbol}] {now:%H:%M} O:{o} H:{h} L:{l} C:{c}")
+    arr = candles[symbol]
+    if arr and arr[-1][0] == ts:
+        arr[-1] = [ts, o, h, l, c, v]
+    else:
+        arr.append([ts, o, h, l, c, v])
+        if len(arr) > 150: arr.pop(0)
+        analyze(symbol)
+
+def analyze(symbol):
+    if not running_flag or not trade_enabled[symbol]: return
+    df = np.array(candles[symbol])
+    if len(df) < 50: return
+    close = df[:,4]
+    cci = calc_cci(df)
+    adx = calc_adx(df)
+    macd_hist = calc_macd_hist(close)
+    if np.isnan(cci[-1]) or np.isnan(adx[-1]) or np.isnan(macd_hist[-1]) or np.isnan(cci[-2]) or np.isnan(macd_hist[-2]):
         return
+    now_cci, prev_cci = cci[-1], cci[-2]
+    now_adx = adx[-1]
+    now_hist, prev_hist = macd_hist[-1], macd_hist[-2]
+    price = close[-1]
 
-    # 진입 신호
-    if cci_val > 100 and adx_val > 25 and positions[symbol] is None:
-        positions[symbol] = "long"
-        entry_prices[symbol] = close
-        trailing_highs[symbol] = close
-        send_telegram(f"🚀 [롱 진입] {symbol}\n진입가: {close:.2f}\nCCI:{cci_val:.1f}, ADX:{adx_val:.1f}\n가상잔고: {virtual_balance:.2f}")
-    elif cci_val < -100 and adx_val > 25 and positions[symbol] is None:
-        positions[symbol] = "short"
-        entry_prices[symbol] = close
-        trailing_lows[symbol] = close
-        send_telegram(f"🔥 [숏 진입] {symbol}\n진입가: {close:.2f}\nCCI:{cci_val:.1f}, ADX:{adx_val:.1f}\n가상잔고: {virtual_balance:.2f}")
+    pos = positions[symbol]
+    if pos:
+        if pos["side"] == "long":
+            pos["highest"] = max(pos["highest"], price)
+            # --- 손절 -2%, 익절 +3% 후 트레일링 -0.5%
+            if price <= pos["entry_price"] * 0.98:
+                close_position(symbol, price, "손절 -2%")
+            elif price >= pos["entry_price"] * 1.03 and price <= pos["highest"] * 0.995:
+                close_position(symbol, price, "익절 후 트레일링 스탑")
+        elif pos["side"] == "short":
+            pos["lowest"] = min(pos["lowest"], price)
+            if price >= pos["entry_price"] * 1.02:
+                close_position(symbol, price, "손절 -2%")
+            elif price <= pos["entry_price"] * 0.97 and price >= pos["lowest"] * 1.005:
+                close_position(symbol, price, "익절 후 트레일링 스탑")
+    else:
+        if now_cci < -100 and now_hist > prev_hist and now_adx > 25 and now_cci > prev_cci:
+            open_position(symbol, "long", price)
+        elif now_cci > 100 and now_hist < prev_hist and now_adx > 25 and now_cci < prev_cci:
+            open_position(symbol, "short", price)
 
-async def ws_loop(symbol):
+async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
-    channel = "candle15m"
-    while True:
-        try:
-            async with websockets.connect(
-                uri,
-                ping_interval=None,  # 수동 핑/퐁 관리(직접 보냄)
-                close_timeout=5,
-                max_queue=32,
-                max_size=2**20,
-            ) as ws:
-                await ws.send(json.dumps({
-                    "op": "subscribe",
-                    "args": [{
-                        "instType": "USDT-FUTURES",
-                        "channel": channel,
-                        "instId": symbol
-                    }]
-                }))
-                print(f"✅ {symbol} WebSocket 연결됨")
-                last_ping = time.time()
-                while True:
-                    # 20초마다 ping 전송
-                    if time.time() - last_ping > 20:
-                        await ws.send(json.dumps({"op": "ping"}))
-                        last_ping = time.time()
-                    try:
-                        msg = await asyncio.wait_for(ws.recv(), timeout=25)
-                    except asyncio.TimeoutError:
-                        print(f"⏳ {symbol} ping/pong timeout, 재접속 시도")
-                        break  # 자동 reconnect
-                    # ping/pong 직접 관리
-                    if msg == '{"event":"pong"}' or '"pong"' in msg:
-                        continue
-                    if msg == '{"event":"ping"}' or '"ping"' in msg:
-                        await ws.send(json.dumps({"op": "pong"}))
-                        continue
-                    # 데이터 처리
-                    msg = json.loads(msg)
-                    if msg.get("event") == "error":
-                        print(f"❌ 에러: {msg}")
-                        continue
-                    if msg.get("action") in ["snapshot", "update"]:
-                        d = msg["data"][0]
-                        if len(candles_data[symbol]) > 0 and d[0] == candles_data[symbol][-1][0]:
-                            candles_data[symbol][-1] = d
-                        else:
-                            candles_data[symbol].append(d)
-                        if len(candles_data[symbol]) > MAX_CANDLES:
-                            candles_data[symbol] = candles_data[symbol][-MAX_CANDLES:]
-                        if len(candles_data[symbol]) >= 20:
-                            cci_vals = calc_cci(candles_data[symbol], 14)
-                            adx_vals = calc_adx(candles_data[symbol], 5)
-                            latest_cci = cci_vals[-1]
-                            latest_adx = adx_vals[-1]
-                            close = float(d[4])
-                            await process_signal(symbol, latest_cci, latest_adx, close)
-        except Exception as e:
-            print(f"🔁 {symbol} WebSocket 연결 종료, 5초 후 재시도... 원인: {e}")
-            await asyncio.sleep(5)
+    async with websockets.connect(uri, ping_interval=20) as ws:
+        sub = {"op": "subscribe", "args": []}
+        for sym in SYMBOLS:
+            sub["args"].append({"instType": "USDT-FUTURES", "channel": "candle15m", "instId": sym})
+        await ws.send(json.dumps(sub))
+        print("✅ WebSocket 연결됨")
+        while True:
+            try:
+                msg = json.loads(await ws.recv())
+                if "data" in msg:
+                    symbol = msg["arg"]["instId"]
+                    on_msg(symbol, msg["data"][0])
+            except Exception as e:
+                print("WebSocket 오류:", e)
+                break
 
-def periodic_report():
-    global virtual_balance
-    while True:
-        msg = "[1시간마다 리포트]\n"
-        for symbol in SYMBOLS:
-            pos = positions[symbol]
-            entry = entry_prices[symbol]
-            msg += f"{symbol} | 포지션: {pos or '-'} | 진입가: {entry or '-'}\n"
-        msg += f"현재 가상잔고: {virtual_balance:.2f}\n"
-        send_telegram(msg)
-        time.sleep(3600)
+# === Flask 텔레그램 명령어 제어 ===
+app = Flask(__name__)
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def hook():
+    global running_flag
+    msg = request.get_json()
+    if "message" in msg:
+        chat_id = msg["message"]["chat"]["id"]
+        text = msg["message"].get("text", "")
+        if str(chat_id) != str(TELEGRAM_CHAT_ID): return "no"
+        if text == "/시작":
+            running_flag = True
+            send_telegram("✅ 자동매매 시작")
+        elif text == "/중지":
+            running_flag = False
+            send_telegram("⛔ 자동매매 중지")
+        elif text == "/상태":
+            msg = f"📊 잔액: ${BALANCE:.2f}\n"
+            for sym in SYMBOLS:
+                pos = positions[sym]
+                if pos:
+                    msg += f"{sym} {pos['side']} @ {pos['entry_price']}\n"
+                else:
+                    msg += f"{sym} 포지션 없음\n"
+            send_telegram(msg)
+    return "ok"
 
-async def main():
-    tasks = [ws_loop(symbol) for symbol in SYMBOLS]
-    await asyncio.gather(*tasks)
-
+# === 실행 ===
 if __name__ == "__main__":
-    send_telegram(
-        f"✅ 가상매매 봇 시작!\n초기잔고: {virtual_balance}\n전략: 15분봉, CCI(14)+ADX(5)\n"
-        f"롱: CCI>100/ADX>25, 숏: CCI<-100/ADX>25\n"
-        f"익절+3%→트레일링스탑(-0.5%), 손절-2%\n"
-        f"BTC: 10배, ETH: 7배"
-    )
-    threading.Thread(target=periodic_report, daemon=True).start()
-    asyncio.run(main())
-
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=5000)).start()
+    asyncio.run(ws_loop())
