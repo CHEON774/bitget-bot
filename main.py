@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from flask import Flask, request
 import threading
 import pandas as pd
+import time
 
 # === 설정 ===
 SYMBOLS = {
@@ -179,7 +180,23 @@ def hook():
             send_telegram(msg)
     return "ok"
 
+def report_telegram():
+    while True:
+        msg = []
+        for sym in SYMBOLS:
+            pos = positions[sym]
+            if pos:
+                msg.append(f"{sym} | 포지션: {pos['side']} | 진입가: {pos['entry_price']}")
+            else:
+                msg.append(f"{sym} | 포지션: - | 진입가: -")
+        msg.append(f"현재 가상잔고: {BALANCE:.2f}")
+        send_telegram("\n".join(msg))
+        for _ in range(3600):
+            if not running_flag: break
+            time.sleep(1)
+
 # === 실행 ===
 if __name__ == "__main__":
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=5000)).start()
+    threading.Thread(target=report_telegram, daemon=True).start()  # 추가!
     asyncio.run(ws_loop())
