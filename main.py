@@ -192,7 +192,8 @@ def hook():
             for sym in SYMBOLS:
                 pos = positions[sym]
                 if pos:
-                    msg += f"{sym} {pos['side']} @ {pos['entry_price']}\n"
+                    trail_status = "O" if pos.get("trail_active") else "X"
+                    msg += f"{sym} {pos['side']} @ {pos['entry_price']} | 트레일링: {trail_status}\n"
                 else:
                     msg += f"{sym} 포지션 없음\n"
             send_telegram(msg)
