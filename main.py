@@ -25,7 +25,7 @@ def send_telegram(msg):
         requests.post(url, data=data)
     except: pass
 
-# === 지표 계산 ===
+# === 지표 계산 (MACD(7,17,8), CCI(14)만) ===
 def calc_cci(df, period=14):
     tp = (df[:,1] + df[:,2] + df[:,3]) / 3
     if len(tp) < period: return np.full(len(tp), np.nan)
@@ -34,27 +34,13 @@ def calc_cci(df, period=14):
     cci = (tp[period-1:] - ma) / (0.015 * md)
     return np.concatenate([np.full(period-1, np.nan), cci])
 
-def calc_adx(df, period=5):
-    high, low, close = df[:,2], df[:,3], df[:,4]
-    if len(close) <= period+2: return np.full(len(close), np.nan)
-    plus_dm = np.where(high[1:] - high[:-1] > low[:-1] - low[1:], np.maximum(high[1:] - high[:-1], 0), 0)
-    minus_dm = np.where(low[:-1] - low[1:] > high[1:] - high[:-1], np.maximum(low[:-1] - low[1:], 0), 0)
-    tr = np.maximum.reduce([high[1:] - low[1:], np.abs(high[1:] - close[:-1]), np.abs(low[1:] - close[:-1])])
-    atr = np.convolve(tr, np.ones(period)/period, mode='valid')
-    plus_di = 100 * np.convolve(plus_dm, np.ones(period)/period, mode='valid') / atr
-    minus_di = 100 * np.convolve(minus_dm, np.ones(period)/period, mode='valid') / atr
-    dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
-    adx = np.convolve(dx, np.ones(period)/period, mode='valid')
-    pad = len(close) - len(adx)
-    return np.concatenate([np.full(pad, np.nan), adx])
-
 def calc_macd_hist(close):
-    if len(close) < 26:
+    if len(close) < 17:
         return np.full(len(close), np.nan)
-    ema12 = pd.Series(close).ewm(span=12).mean()
-    ema26 = pd.Series(close).ewm(span=26).mean()
-    macd = ema12 - ema26
-    signal = macd.ewm(span=9).mean()
+    ema7 = pd.Series(close).ewm(span=7).mean()
+    ema17 = pd.Series(close).ewm(span=17).mean()
+    macd = ema7 - ema17
+    signal = macd.ewm(span=8).mean()
     hist = macd - signal
     return hist.values
 
@@ -64,7 +50,8 @@ def open_position(symbol, side, entry_price):
     qty = round(conf["amount"] / entry_price, 6)
     positions[symbol] = {
         "side": side, "entry_price": entry_price, "qty": qty,
-        "highest": entry_price, "lowest": entry_price
+        "highest": entry_price, "lowest": entry_price,
+        "trail_active": False
     }
     send_telegram(f"🚀 {symbol} {side.upper()} 진입 @ {entry_price}")
 
@@ -80,7 +67,7 @@ def close_position(symbol, price, reason):
     positions[symbol] = None
     send_telegram(f"💸 {symbol} 포지션 청산 @ {price}\n수익률: {pnl_pct*100:.2f}% / 잔액: ${BALANCE:.2f} / 사유: {reason}")
 
-# === WebSocket & 전략 (15분봉만) ===
+# === WebSocket & 전략 (15분봉) ===
 candles_15m = {s: [] for s in SYMBOLS}
 
 def on_msg(symbol, d):
@@ -98,41 +85,52 @@ def on_msg(symbol, d):
 def analyze(symbol):
     if not running_flag or not trade_enabled[symbol]: return
     df = np.array(candles_15m[symbol])
-    if len(df) < 50: return
+    if len(df) < 20: return
     close = df[:,4]
     cci = calc_cci(df)
-    adx = calc_adx(df)
     macd_hist = calc_macd_hist(close)
-    if np.isnan(cci[-1]) or np.isnan(adx[-1]) or np.isnan(macd_hist[-1]) or np.isnan(cci[-2]) or np.isnan(macd_hist[-2]):
+    if np.isnan(cci[-1]) or np.isnan(macd_hist[-1]) or np.isnan(cci[-2]):
         return
-    cond_long = cci[-1] < -100 and adx[-1] > 25 and macd_hist[-1] > macd_hist[-2]
-    cond_short = cci[-1] > 100 and adx[-1] > 25 and macd_hist[-1] < macd_hist[-2]
 
     price = close[-1]
     pos = positions[symbol]
     conf = SYMBOLS[symbol]
-    if pos:
-        if pos["side"] == "long":
-            pos["highest"] = max(pos["highest"], price)
-            # 손절
-            if price <= pos["entry_price"] * conf["stop"]:
-                close_position(symbol, price, f"손절 {round((1-conf['stop'])*100,2)}%")
-            # 익절 + 트레일링
-            elif price >= pos["entry_price"] * conf["take"] and price <= pos["highest"] * conf["trail"]:
-                close_position(symbol, price, "익절 도달 후 트레일링 스탑")
-        elif pos["side"] == "short":
-            pos["lowest"] = min(pos["lowest"], price)
-            # 손절
-            if price >= pos["entry_price"] / conf["stop"]:
-                close_position(symbol, price, f"손절 {round((1-conf['stop'])*100,2)}%")
-            # 익절 + 트레일링
-            elif price <= pos["entry_price"] / conf["take"] and price >= pos["lowest"] / conf["trail"]:
-                close_position(symbol, price, "익절 도달 후 트레일링 스탑")
-    else:
-        if cond_long:
-            open_position(symbol, "long", price)
-        elif cond_short:
+    
+    # === 진입 조건 (CCI 만!)
+    if pos is None:
+        if cci[-1] > 100:
             open_position(symbol, "short", price)
+        elif cci[-1] < -100:
+            open_position(symbol, "long", price)
+        return
+
+    # === 청산 (손절/익절/트레일링) ===
+    # 롱
+    if pos["side"] == "long":
+        pos["highest"] = max(pos["highest"], price)
+        # 손절
+        if price <= pos["entry_price"] * conf["stop"]:
+            close_position(symbol, price, f"손절 {round((1-conf['stop'])*100,2)}%")
+        # 익절 + 트레일링
+        elif price >= pos["entry_price"] * conf["take"]:
+            if not pos["trail_active"]:
+                send_telegram(f"🟢 {symbol} 롱 트레일링 스탑 발동! 진입가: {pos['entry_price']} 현재가: {price}")
+                pos["trail_active"] = True
+            elif price <= pos["highest"] * conf["trail"]:
+                close_position(symbol, price, "익절 도달 후 트레일링 스탑")
+    # 숏
+    elif pos["side"] == "short":
+        pos["lowest"] = min(pos["lowest"], price)
+        # 손절
+        if price >= pos["entry_price"] / conf["stop"]:
+            close_position(symbol, price, f"손절 {round((1-conf['stop'])*100,2)}%")
+        # 익절 + 트레일링
+        elif price <= pos["entry_price"] / conf["take"]:
+            if not pos["trail_active"]:
+                send_telegram(f"🔴 {symbol} 숏 트레일링 스탑 발동! 진입가: {pos['entry_price']} 현재가: {price}")
+                pos["trail_active"] = True
+            elif price >= pos["lowest"] / conf["trail"]:
+                close_position(symbol, price, "익절 도달 후 트레일링 스탑")
 
 # === WebSocket 루프 (15분봉만, 자동 재연결) ===
 async def ws_loop():
