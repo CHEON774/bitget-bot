@@ -89,18 +89,20 @@ def analyze(symbol):
     close = df[:,4]
     cci = calc_cci(df)
     macd_hist = calc_macd_hist(close)
-    if np.isnan(cci[-1]) or np.isnan(macd_hist[-1]) or np.isnan(cci[-2]):
+    if np.isnan(cci[-1]) or np.isnan(macd_hist[-1]) or np.isnan(macd_hist[-2]) or np.isnan(cci[-2]):
         return
 
     price = close[-1]
     pos = positions[symbol]
     conf = SYMBOLS[symbol]
-    
-    # === 진입 조건 (CCI 만!)
+
+    # === 진입 조건: CCI + MACD 골크/데크 동시
     if pos is None:
-        if cci[-1] > 100:
+        # 숏: CCI > 100 & MACD 데드크로스
+        if cci[-1] > 100 and macd_hist[-2] > 0 and macd_hist[-1] < 0:
             open_position(symbol, "short", price)
-        elif cci[-1] < -100:
+        # 롱: CCI < -100 & MACD 골든크로스
+        elif cci[-1] < -100 and macd_hist[-2] < 0 and macd_hist[-1] > 0:
             open_position(symbol, "long", price)
         return
 
