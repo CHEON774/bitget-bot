@@ -139,7 +139,7 @@ async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
     while True:
         try:
-            async with websockets.connect(uri, ping_interval=20) as ws:
+            async with websockets.connect(uri, ping_interval=15, ping_timeout=10) as ws:
                 sub = {"op": "subscribe", "args": []}
                 for sym in SYMBOLS:
                     sub["args"].append({"instType": "USDT-FUTURES", "channel": "candle15m", "instId": sym})
@@ -152,8 +152,8 @@ async def ws_loop():
                         on_msg(symbol, msg["data"][0])
         except Exception as e:
             print("WebSocket 오류:", e)
-            print("10초 후 재연결 시도...")
             await asyncio.sleep(10)
+
 
 # === 1시간 리포트 ===
 def report_telegram():
