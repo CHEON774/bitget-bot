@@ -131,21 +131,15 @@ async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
     while True:
         try:
-            async with websockets.connect(uri, ping_interval=20) as ws:
-                sub = {"op": "subscribe", "args": []}
-                for sym in SYMBOLS:
-                    sub["args"].append({"instType": "USDT-FUTURES", "channel": "candle15m", "instId": sym})
-                await ws.send(json.dumps(sub))
-                print("✅ WebSocket 연결됨")
+            async with websockets.connect(uri, ping_interval=10, ping_timeout=10) as ws:
+                # ... (구독, 데이터 처리 코드)
                 while True:
-                    msg = json.loads(await ws.recv())
-                    if "data" in msg:
-                        symbol = msg["arg"]["instId"]
-                        on_msg(symbol, msg["data"][0])
+                    msg = await ws.recv()
+                    # ... (메시지 처리)
         except Exception as e:
             print("WebSocket 오류:", e)
-            print("10초 후 재연결 시도...")
-            await asyncio.sleep(10)
+            await asyncio.sleep(3)  # 재연결 대기시간 더 짧게
+
 
 # === 1시간 리포트 ===
 def report_telegram():
