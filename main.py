@@ -131,14 +131,26 @@ async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
     while True:
         try:
+            print("🔗 WebSocket 연결 시도...")
             async with websockets.connect(uri, ping_interval=10, ping_timeout=10) as ws:
-                # ... (구독, 데이터 처리 코드)
+                print("✅ WebSocket 연결됨")
+                # 구독 메시지 예시
+                sub = {
+                    "op": "subscribe",
+                    "args": [{
+                        "instType": "USDT-FUTURES",
+                        "channel": "candle15m",
+                        "instId": "BTCUSDT"
+                    }]
+                }
+                await ws.send(json.dumps(sub))
                 while True:
                     msg = await ws.recv()
-                    # ... (메시지 처리)
+                    # (여기에 메시지 처리/전략 로직)
         except Exception as e:
-            print("WebSocket 오류:", e)
-            await asyncio.sleep(3)  # 재연결 대기시간 더 짧게
+            print(f"❌ WebSocket 오류: {e}")
+            print("⏳ 3초 후 재연결 시도...")
+            await asyncio.sleep(3)
 
 
 # === 1시간 리포트 ===
