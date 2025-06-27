@@ -91,8 +91,13 @@ def close_position(symbol, side, price, reason):
 candles_15m = {s: [] for s in SYMBOLS}
 
 def on_msg(symbol, d):
-    ts = int(d[0])
-    o, h, l, c, v = map(float, d[1:6])
+    # 바이비트 kline 메시지는 d가 딕셔너리형!
+    ts = int(d['start'])
+    o = float(d['open'])
+    h = float(d['high'])
+    l = float(d['low'])
+    c = float(d['close'])
+    v = float(d['volume'])
     now = datetime.fromtimestamp(ts/1000) + timedelta(hours=9)
     arr = candles_15m[symbol]
     if arr and arr[-1][0] == ts:
@@ -101,6 +106,7 @@ def on_msg(symbol, d):
         arr.append([ts, o, h, l, c, v])
         if len(arr) > 150: arr.pop(0)
         analyze(symbol)
+
 
 def analyze(symbol):
     if not running_flag or not trade_enabled[symbol]: return
