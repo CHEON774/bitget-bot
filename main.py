@@ -146,7 +146,12 @@ async def ws_loop():
     while True:
         try:
             print("🔗 WebSocket 연결 시도...")
-            async with websockets.connect(uri, ping_interval=10, ping_timeout=10) as ws:
+            async with websockets.connect(
+                uri,
+                ping_interval=None,     # 바이비트는 서버에서 ping/pong 자체적으로 처리
+                ping_timeout=None,
+                max_queue=None
+            ) as ws:
                 print("✅ WebSocket 연결됨")
                 sub = {
                     "op": "subscribe",
@@ -160,7 +165,7 @@ async def ws_loop():
                 while True:
                     raw = await ws.recv()
                     msg = json.loads(raw)
-                    # print(msg)  # 주석 해제해서 raw 메시지 직접 확인!
+                    print(msg)  # 원본 전체 출력!
                     if isinstance(msg, dict) and msg.get("topic", "").startswith("kline.15.") and msg.get("data"):
                         symbol = msg["topic"].split(".")[-1]
                         on_msg(symbol, msg["data"][0])
@@ -168,6 +173,7 @@ async def ws_loop():
             print(f"❌ WebSocket 오류: {e}")
             print("⏳ 3초 후 재연결 시도...")
             await asyncio.sleep(3)
+
 
 # === 1시간 리포트 ===
 def report_telegram():
