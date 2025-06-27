@@ -158,8 +158,10 @@ async def ws_loop():
                 }
                 await ws.send(json.dumps(sub))
                 while True:
-                    msg = json.loads(await ws.recv())
-                    if "topic" in msg and "data" in msg and msg["data"]:
+                    raw = await ws.recv()
+                    msg = json.loads(raw)
+                    # print(msg)  # 주석 해제해서 raw 메시지 직접 확인!
+                    if isinstance(msg, dict) and msg.get("topic", "").startswith("kline.15.") and msg.get("data"):
                         symbol = msg["topic"].split(".")[-1]
                         on_msg(symbol, msg["data"][0])
         except Exception as e:
