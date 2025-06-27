@@ -6,12 +6,14 @@ import pandas as pd
 
 # === 설정 ===
 SYMBOLS = {
-    "BTCUSDT": {"leverage": 10, "amount": 150, "stop": 0.992, "tp": 1.012, "trail": 0.996},   # 손절 -0.8%, 익절 +1.2%, 트레일링 -0.4%
-    "ETHUSDT": {"leverage": 7, "amount": 120, "stop": 0.99, "tp": 1.017, "trail": 0.993},     # 손절 -1.0%, 익절 +1.7%, 트레일링 -0.7%
-    "SOLUSDT": {"leverage": 5, "amount": 100, "stop": 0.985, "tp": 1.025, "trail": 0.99},     # 손절 -1.5%, 익절 +2.5%, 트레일링 -1.0%
+    "BTCUSDT": {"leverage": 10, "amount": 100, "stop": 0.992, "tp": 1.012, "trail": 0.996},  # 손절 -0.8%, 익절 +1.2%, 트레일링 -0.4%
+    "ETHUSDT": {"leverage": 7, "amount": 80,  "stop": 0.99,  "tp": 1.017, "trail": 0.993},   # 손절 -1.0%, 익절 +1.7%, 트레일링 -0.7%
+    "SOLUSDT": {"leverage": 5, "amount": 50,  "stop": 0.985, "tp": 1.025, "trail": 0.99},    # 손절 -1.5%, 익절 +2.5%, 트레일링 -1.0%
 }
 BALANCE = 756.0
-positions = {s: None for s in SYMBOLS}
+
+# 롱/숏 포지션을 각각 관리 (Bybit 양방향 지원)
+positions = {s: {"long": None, "short": None} for s in SYMBOLS}
 trade_enabled = {s: True for s in SYMBOLS}
 running_flag = True
 
@@ -50,29 +52,42 @@ def calc_macd_hist(close):
     hist = macd - signal
     return hist.values
 
+# === 잔고 내에서만 진입 허용 ===
+def total_position_amount():
+    total = 0
+    for sym in SYMBOLS:
+        for side in ("long", "short"):
+            pos = positions[sym][side]
+            if pos:
+                total += SYMBOLS[sym]["amount"]
+    return total
+
+def can_open_position(symbol):
+    remain = BALANCE - total_position_amount()
+    return remain >= SYMBOLS[symbol]["amount"]
+
 # === 진입 / 청산 시뮬레이션 ===
 def open_position(symbol, side, entry_price):
     conf = SYMBOLS[symbol]
     qty = round(conf["amount"] / entry_price, 6)
-    positions[symbol] = {
+    positions[symbol][side] = {
         "side": side, "entry_price": entry_price, "qty": qty,
         "highest": entry_price, "lowest": entry_price
     }
     send_telegram(f"🚀 {symbol} {side.upper()} 진입 @ {entry_price}")
 
-def close_position(symbol, price, reason):
+def close_position(symbol, side, price, reason):
     global BALANCE
-    pos = positions[symbol]
+    pos = positions[symbol][side]
     if not pos: return
-    side = pos["side"]
     pnl_pct = (price - pos["entry_price"]) / pos["entry_price"]
     if side == "short": pnl_pct *= -1
     profit = SYMBOLS[symbol]["amount"] * pnl_pct
     BALANCE += profit
-    positions[symbol] = None
-    send_telegram(f"💸 {symbol} 포지션 청산 @ {price}\n수익률: {pnl_pct*100:.2f}% / 잔액: ${BALANCE:.2f} / 사유: {reason}")
+    positions[symbol][side] = None
+    send_telegram(f"💸 {symbol} {side.upper()} 청산 @ {price}\n수익률: {pnl_pct*100:.2f}% / 잔액: ${BALANCE:.2f} / 사유: {reason}")
 
-# === WebSocket & 전략 (15분봉만) ===
+# === WebSocket & 전략 (Bybit용, 15분봉만) ===
 candles_15m = {s: [] for s in SYMBOLS}
 
 def on_msg(symbol, d):
@@ -102,66 +117,61 @@ def analyze(symbol):
     cond_short = macd_hist[-1] < macd_hist[-2] and adx[-1] > 25
 
     price = close[-1]
-    pos = positions[symbol]
-    if pos:
-        if pos["side"] == "long":
-            pos["highest"] = max(pos["highest"], price)
-            # 손절
-            if price <= pos["entry_price"] * conf["stop"]:
-                close_position(symbol, price, f"손절 {100*(conf['stop']-1):.2f}%")
-            # 익절+트레일링
-            elif price >= pos["entry_price"] * conf["tp"] and price <= pos["highest"] * conf["trail"]:
-                close_position(symbol, price, f"익절 {100*(conf['tp']-1):.2f}% 도달 후 트레일링")
-        elif pos["side"] == "short":
-            pos["lowest"] = min(pos["lowest"], price)
-            # 숏 손절
-            if price >= pos["entry_price"] * (2 - conf["stop"]):  # 숏 손절(+)
-                close_position(symbol, price, f"손절 {100*(1-conf['stop']):.2f}%")
-            # 숏 익절+트레일링
-            elif price <= pos["entry_price"] * (2 - conf["tp"]) and price >= pos["lowest"] * (2 - conf["trail"]):
-                close_position(symbol, price, f"익절 {100*(conf['tp']-1):.2f}% 도달 후 트레일링")
-    else:
-        if cond_long:
-            open_position(symbol, "long", price)
-        elif cond_short:
-            open_position(symbol, "short", price)
 
-# === WebSocket 루프 (15분봉만, 자동 재연결) ===
+    # 롱 포지션
+    pos_long = positions[symbol]["long"]
+    if pos_long:
+        pos_long["highest"] = max(pos_long["highest"], price)
+        if price <= pos_long["entry_price"] * conf["stop"]:
+            close_position(symbol, "long", price, f"손절 {100*(conf['stop']-1):.2f}%")
+        elif price >= pos_long["entry_price"] * conf["tp"] and price <= pos_long["highest"] * conf["trail"]:
+            close_position(symbol, "long", price, f"익절 {100*(conf['tp']-1):.2f}% 도달 후 트레일링")
+    elif cond_long and can_open_position(symbol):
+        open_position(symbol, "long", price)
+
+    # 숏 포지션
+    pos_short = positions[symbol]["short"]
+    if pos_short:
+        pos_short["lowest"] = min(pos_short["lowest"], price)
+        if price >= pos_short["entry_price"] * (2 - conf["stop"]):  # 숏 손절(+)
+            close_position(symbol, "short", price, f"손절 {100*(1-conf['stop']):.2f}%")
+        elif price <= pos_short["entry_price"] * (2 - conf["tp"]) and price >= pos_short["lowest"] * (2 - conf["trail"]):
+            close_position(symbol, "short", price, f"익절 {100*(conf['tp']-1):.2f}% 도달 후 트레일링")
+    elif cond_short and can_open_position(symbol):
+        open_position(symbol, "short", price)
+
+# === Bybit WebSocket 루프 (15분봉, 양방향 심볼별 구독) ===
 async def ws_loop():
-    uri = "wss://ws.bitget.com/v2/ws/public"
+    uri = "wss://stream.bybit.com/v5/public/linear"
     while True:
         try:
             print("🔗 WebSocket 연결 시도...")
             async with websockets.connect(uri, ping_interval=10, ping_timeout=10) as ws:
                 print("✅ WebSocket 연결됨")
-                # 구독 메시지 예시
-                sub = {
-                    "op": "subscribe",
-                    "args": [{
-                        "instType": "USDT-FUTURES",
-                        "channel": "candle15m",
-                        "instId": "BTCUSDT"
-                    }]
-                }
+                sub = {"op": "subscribe", "args": []}
+                for sym in SYMBOLS:
+                    sub["args"].append(f"kline.15.{sym}")
                 await ws.send(json.dumps(sub))
                 while True:
-                    msg = await ws.recv()
-                    # (여기에 메시지 처리/전략 로직)
+                    msg = json.loads(await ws.recv())
+                    if "data" in msg:
+                        symbol = msg["topic"].split(".")[-1]
+                        on_msg(symbol, msg["data"][0])
         except Exception as e:
             print(f"❌ WebSocket 오류: {e}")
             print("⏳ 3초 후 재연결 시도...")
             await asyncio.sleep(3)
-
 
 # === 1시간 리포트 ===
 def report_telegram():
     while True:
         msg = []
         for sym in SYMBOLS:
-            pos = positions[sym]
-            if pos:
-                msg.append(f"{sym} | 포지션: {pos['side']} | 진입가: {pos['entry_price']}")
-            else:
+            for side in ("long", "short"):
+                pos = positions[sym][side]
+                if pos:
+                    msg.append(f"{sym} | {side.upper()} | 진입가: {pos['entry_price']}")
+            if not positions[sym]["long"] and not positions[sym]["short"]:
                 msg.append(f"{sym} | 포지션: - | 진입가: -")
         msg.append(f"현재 가상잔고: {BALANCE:.2f}")
         send_telegram("\n".join(msg))
@@ -188,10 +198,11 @@ def hook():
         elif text == "/상태":
             msg = f"📊 잔액: ${BALANCE:.2f}\n"
             for sym in SYMBOLS:
-                pos = positions[sym]
-                if pos:
-                    msg += f"{sym} {pos['side']} @ {pos['entry_price']}\n"
-                else:
+                for side in ("long", "short"):
+                    pos = positions[sym][side]
+                    if pos:
+                        msg += f"{sym} {side.upper()} @ {pos['entry_price']}\n"
+                if not positions[sym]["long"] and not positions[sym]["short"]:
                     msg += f"{sym} 포지션 없음\n"
             send_telegram(msg)
     return "ok"
@@ -201,4 +212,3 @@ if __name__ == "__main__":
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=5000)).start()
     threading.Thread(target=report_telegram, daemon=True).start()
     asyncio.run(ws_loop())
-
