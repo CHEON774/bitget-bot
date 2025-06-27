@@ -148,13 +148,18 @@ async def ws_loop():
             print("🔗 WebSocket 연결 시도...")
             async with websockets.connect(uri, ping_interval=10, ping_timeout=10) as ws:
                 print("✅ WebSocket 연결됨")
-                sub = {"op": "subscribe", "args": []}
-                for sym in SYMBOLS:
-                    sub["args"].append(f"kline.15.{sym}")
+                sub = {
+                    "op": "subscribe",
+                    "args": [
+                        "kline.15.BTCUSDT",
+                        "kline.15.ETHUSDT",
+                        "kline.15.SOLUSDT"
+                    ]
+                }
                 await ws.send(json.dumps(sub))
                 while True:
                     msg = json.loads(await ws.recv())
-                    if "data" in msg:
+                    if "topic" in msg and "data" in msg and msg["data"]:
                         symbol = msg["topic"].split(".")[-1]
                         on_msg(symbol, msg["data"][0])
         except Exception as e:
