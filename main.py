@@ -69,9 +69,14 @@ def can_open_position(symbol):
 def open_position(symbol, side, entry_price):
     conf = SYMBOLS[symbol]
     qty = round(conf["amount"] / entry_price, 6)
+    # 트레일링 플래그 등 모든 정보 포함
     positions[symbol][side] = {
-        "side": side, "entry_price": entry_price, "qty": qty,
-        "highest": entry_price, "lowest": entry_price
+        "side": side,
+        "entry_price": entry_price,
+        "qty": qty,
+        "highest": entry_price if side == "long" else None,
+        "lowest": entry_price if side == "short" else None,
+        "trailing_active": False
     }
     send_telegram(f"🚀 {symbol} {side.upper()} 진입 @ {entry_price}")
 
@@ -90,7 +95,6 @@ def close_position(symbol, side, price, reason):
 candles_15m = {s: [] for s in SYMBOLS}
 
 def on_msg(symbol, d):
-    # 바이비트 캔들: 딕셔너리 파싱!
     ts = int(d['start'])
     o = float(d['open'])
     h = float(d['high'])
@@ -126,22 +130,42 @@ def analyze(symbol):
     # 롱 포지션
     pos_long = positions[symbol]["long"]
     if pos_long:
-        pos_long["highest"] = max(pos_long["highest"], price)
+        # 손절
         if price <= pos_long["entry_price"] * conf["stop"]:
             close_position(symbol, "long", price, f"손절 {100*(conf['stop']-1):.2f}%")
-        elif price >= pos_long["entry_price"] * conf["tp"] and price <= pos_long["highest"] * conf["trail"]:
-            close_position(symbol, "long", price, f"익절 {100*(conf['tp']-1):.2f}% 도달 후 트레일링")
+            return
+        # 트레일링 익절 트리거
+        if not pos_long["trailing_active"] and price >= pos_long["entry_price"] * conf["tp"]:
+            pos_long["trailing_active"] = True
+            pos_long["highest"] = price
+            send_telegram(f"🟢 {symbol} 롱 트레일링 활성화 시작 (최고가:{price})")
+        # 트레일링 활성화 후 최고가 갱신/청산
+        if pos_long["trailing_active"]:
+            pos_long["highest"] = max(pos_long["highest"], price)
+            if price <= pos_long["highest"] * conf["trail"]:
+                close_position(symbol, "long", price, f"익절 트레일링 도달")
+                return
     elif cond_long and can_open_position(symbol):
         open_position(symbol, "long", price)
 
     # 숏 포지션
     pos_short = positions[symbol]["short"]
     if pos_short:
-        pos_short["lowest"] = min(pos_short["lowest"], price)
-        if price >= pos_short["entry_price"] * (2 - conf["stop"]):  # 숏 손절(+)
+        # 손절
+        if price >= pos_short["entry_price"] * (2 - conf["stop"]):
             close_position(symbol, "short", price, f"손절 {100*(1-conf['stop']):.2f}%")
-        elif price <= pos_short["entry_price"] * (2 - conf["tp"]) and price >= pos_short["lowest"] * (2 - conf["trail"]):
-            close_position(symbol, "short", price, f"익절 {100*(conf['tp']-1):.2f}% 도달 후 트레일링")
+            return
+        # 트레일링 익절 트리거
+        if not pos_short["trailing_active"] and price <= pos_short["entry_price"] * (2 - conf["tp"]):
+            pos_short["trailing_active"] = True
+            pos_short["lowest"] = price
+            send_telegram(f"🔴 {symbol} 숏 트레일링 활성화 시작 (최저가:{price})")
+        # 트레일링 활성화 후 최저가 갱신/청산
+        if pos_short["trailing_active"]:
+            pos_short["lowest"] = min(pos_short["lowest"], price)
+            if price >= pos_short["lowest"] * (2 - conf["trail"]):
+                close_position(symbol, "short", price, f"익절 트레일링 도달")
+                return
     elif cond_short and can_open_position(symbol):
         open_position(symbol, "short", price)
 
@@ -185,7 +209,8 @@ def report_telegram():
                     price_now = candles_15m[sym][-1][4] if candles_15m[sym] else entry
                     pnl = (price_now - entry) / entry * 100
                     if side == "short": pnl *= -1
-                    msg.append(f"{sym} | {side.upper()} | 진입가: {entry} | 수익률: {pnl:.2f}%")
+                    trail_state = "O" if pos.get("trailing_active") else "X"
+                    msg.append(f"{sym} | {side.upper()} | 진입가: {entry} | 수익률: {pnl:.2f}% | 트레일링:{trail_state}")
             if not positions[sym]["long"] and not positions[sym]["short"]:
                 msg.append(f"{sym} | 포지션: - | 진입가: -")
         msg.append(f"현재 가상잔고: {BALANCE:.2f}")
@@ -220,7 +245,8 @@ def hook():
                         price_now = candles_15m[sym][-1][4] if candles_15m[sym] else entry
                         pnl = (price_now - entry) / entry * 100
                         if side == "short": pnl *= -1
-                        msgtxt += f"{sym} {side.upper()} @ {entry} | 수익률: {pnl:.2f}%\n"
+                        trail_state = "O" if pos.get("trailing_active") else "X"
+                        msgtxt += f"{sym} {side.upper()} @ {entry} | 수익률: {pnl:.2f}% | 트레일링:{trail_state}\n"
                 if not positions[sym]["long"] and not positions[sym]["short"]:
                     msgtxt += f"{sym} 포지션 없음\n"
             send_telegram(msgtxt)
