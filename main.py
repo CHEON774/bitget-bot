@@ -11,9 +11,9 @@ SYMBOLS = {
     "SOLUSDT": {"leverage": 5,  "amount": 50,  "stop": 0.985, "tp": 1.025, "trail": 0.99},
 }
 STRATEGIES = {
-    "A": "MTF_30m5m_EMA",       # 30m 골크/데크 → 5m 교차 (ADX 없음)
-    "B": "MACD7-17-8+ADX5_15m", # 15m MACD+ADX
-    "C": "CCI14_15m"            # 15m CCI
+    "A": "MTF_30m5m_EMA",
+    "B": "MACD7-17-8+ADX5_15m",
+    "C": "CCI14_15m"
 }
 INIT_BALANCE = 756.0
 
@@ -72,6 +72,31 @@ def calc_cci(df, period=14):
     cci = (tp[period-1:] - ma) / (0.015 * md)
     return np.concatenate([np.full(period-1, np.nan), cci])
 
+# === 바이비트 과거 캔들 불러오기 ===
+def fetch_bybit_candles(symbol, interval, limit=100):
+    url = "https://api.bybit.com/v5/market/kline"
+    params = {
+        "category": "linear",
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit
+    }
+    resp = requests.get(url, params=params)
+    arr = []
+    if resp.status_code == 200:
+        js = resp.json()
+        if js["retCode"] == 0 and "list" in js["result"]:
+            for d in reversed(js["result"]["list"]):
+                arr.append([
+                    int(d[0]),                 # start timestamp
+                    float(d[1]),               # open
+                    float(d[2]),               # high
+                    float(d[3]),               # low
+                    float(d[4]),               # close
+                    float(d[5]),               # volume
+                ])
+    return arr
+
 # === 잔고 내에서만 진입 허용 ===
 def total_position_amount(positions, stg):
     total = 0
@@ -125,10 +150,16 @@ def open_position(stg, symbol, side, entry_price):
     }
     send_telegram(f"[전략{stg}] 🚀 {symbol} {side.upper()} 진입 @ {entry_price}")
 
-# === 캔들 관리 ===
+# === 캔들 관리 (초기 과거캔들 + 실시간 연동) ===
 candles_5m = {s: [] for s in SYMBOLS}
 candles_15m = {s: [] for s in SYMBOLS}
 candles_30m = {s: [] for s in SYMBOLS}
+
+# === 초기캔들 불러오기 (서버 켤 때 1회) ===
+for s in SYMBOLS:
+    candles_5m[s] = fetch_bybit_candles(s, "5", limit=60)
+    candles_15m[s] = fetch_bybit_candles(s, "15", limit=50)
+    candles_30m[s] = fetch_bybit_candles(s, "30", limit=52)
 
 def on_msg_5m(symbol, d):
     ts = int(d['start'])
@@ -189,7 +220,7 @@ def analyze_trend_30m(symbol):
         trend_30m[symbol] = "short"
         send_telegram(f"[전략A] {symbol} 30분봉 데드크로스!")
 
-# === 각 전략별 매매 ===
+# === 전략A: 30m 추세+5m 교차(ADX없이) ===
 def analyze_A(symbol):
     if not running_flag: return
     arr = candles_5m[symbol]
@@ -197,11 +228,8 @@ def analyze_A(symbol):
     close = np.array(arr)[:,4]
     ema20 = calc_ema(close, 20)
     ema50 = calc_ema(close, 50)
-    # ADX 없이 5분봉 교차 신호만!
-    cond_long = (trend_30m[symbol]=="long" and
-                 ema20[-2]<ema50[-2] and ema20[-1]>ema50[-1])
-    cond_short = (trend_30m[symbol]=="short" and
-                  ema20[-2]>ema50[-2] and ema20[-1]<ema50[-1])
+    cond_long = (trend_30m[symbol]=="long" and ema20[-2]<ema50[-2] and ema20[-1]>ema50[-1])
+    cond_short = (trend_30m[symbol]=="short" and ema20[-2]>ema50[-2] and ema20[-1]<ema50[-1])
     price = close[-1]
     pos_long = positions["A"][symbol]["long"]
     pos_short = positions["A"][symbol]["short"]
@@ -239,6 +267,7 @@ def analyze_A(symbol):
     elif cond_short and can_open_position(positions, balances, "A", symbol):
         open_position("A", symbol, "short", price)
 
+# === 전략B: MACD+ADX 15m ===
 def analyze_B(symbol):
     if not running_flag: return
     arr = candles_15m[symbol]
@@ -285,6 +314,7 @@ def analyze_B(symbol):
     elif cond_short and can_open_position(positions, balances, "B", symbol):
         open_position("B", symbol, "short", price)
 
+# === 전략C: CCI 15m ===
 def analyze_C(symbol):
     if not running_flag: return
     arr = candles_15m[symbol]
@@ -377,7 +407,6 @@ def report_telegram():
                     if pos:
                         entry = pos['entry_price']
                         price_now = entry
-                        # 5분/15분/30분봉 중 5,15 우선
                         arr = candles_5m.get(sym) if stg=="A" else candles_15m.get(sym)
                         if arr and len(arr)>0:
                             price_now = arr[-1][4]
@@ -395,7 +424,7 @@ def report_telegram():
                 break
             time.sleep(1)
 
-# === Flask 텔레그램 명령어 제어 ===
+# === Flask 텔레그램 명령어 제어 (/시작 /중지 /상태) ===
 app = Flask(__name__)
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def hook():
@@ -453,4 +482,3 @@ if __name__ == "__main__":
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=5000)).start()
     threading.Thread(target=report_telegram, daemon=True).start()
     asyncio.run(ws_loop())
-
