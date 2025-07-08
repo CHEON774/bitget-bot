@@ -6,22 +6,16 @@ import pandas as pd
 
 # === 설정 ===
 SYMBOLS = {
-    "BTCUSDT": {"leverage": 10, "amount": 100, "stop": 0.992, "tp": 1.012, "trail": 0.996},
-    "ETHUSDT": {"leverage": 7,  "amount": 80,  "stop": 0.99,  "tp": 1.017, "trail": 0.993},
-    "SOLUSDT": {"leverage": 5,  "amount": 50,  "stop": 0.985, "tp": 1.025, "trail": 0.99},
-}
-STRATEGIES = {
-    "A": "MTF_30m5m_EMA",
-    "B": "MACD7-17-8+ADX5_15m",
-    "C": "CCI14_15m"
+    "BTCUSDT": {"leverage": 10, "amount": 150, "stop": 0.99,  "tp": 1.015, "trail": 0.995},
+    "ETHUSDT": {"leverage": 7,  "amount": 100,  "stop": 0.988, "tp": 1.02,  "trail": 0.992},
+    "SOLUSDT": {"leverage": 5,  "amount": 70,  "stop": 0.98,  "tp": 1.03,  "trail": 0.99},
 }
 INIT_BALANCE = 756.0
 
-positions = {stg: {s: {"long": None, "short": None} for s in SYMBOLS} for stg in STRATEGIES}
-balances = {stg: INIT_BALANCE for stg in STRATEGIES}
-trend_30m = {s: "none" for s in SYMBOLS}  # 전략A용
-take_profit_count = {stg: 0 for stg in STRATEGIES}
-stop_loss_count = {stg: 0 for stg in STRATEGIES}
+positions = {s: None for s in SYMBOLS}  # 단일포지션(롱/숏 중 1개만)
+balance = INIT_BALANCE
+take_profit_count = 0
+stop_loss_count = 0
 
 running_flag = True
 report_flag = True
@@ -38,9 +32,6 @@ def send_telegram(msg):
         print("텔레그램 에러:", e)
 
 # === 지표 계산 ===
-def calc_ema(arr, period):
-    return pd.Series(arr).ewm(span=period).mean().values
-
 def calc_adx(df, period=5):
     high, low, close = df[:,2], df[:,3], df[:,4]
     if len(close) <= period+2: return np.full(len(close), np.nan)
@@ -65,82 +56,69 @@ def calc_macd_hist(close):
     hist = macd - signal
     return hist.values
 
-def calc_cci(df, period=14):
-    tp = (df[:,1] + df[:,2] + df[:,3]) / 3
-    ma = np.convolve(tp, np.ones(period)/period, mode='valid')
-    md = np.array([np.mean(np.abs(tp[i-period+1:i+1] - ma[i-period+1])) for i in range(period-1, len(tp))])
-    cci = (tp[period-1:] - ma) / (0.015 * md)
-    return np.concatenate([np.full(period-1, np.nan), cci])
-
-# === 바이비트 과거 캔들 불러오기 ===
-def fetch_bybit_candles(symbol, interval, limit=100):
-    url = "https://api.bybit.com/v5/market/kline"
+# === 비트겟 과거 캔들 불러오기 ===
+def fetch_bitget_candles(symbol, interval, limit=100):
+    url = "https://api.bitget.com/api/v2/market/history-candles"
     params = {
-        "category": "linear",
-        "symbol": symbol,
-        "interval": interval,
+        "instId": symbol,
+        "bar": interval,  # '15m'
         "limit": limit
     }
     resp = requests.get(url, params=params)
     arr = []
     if resp.status_code == 200:
         js = resp.json()
-        if js["retCode"] == 0 and "list" in js["result"]:
-            for d in reversed(js["result"]["list"]):
+        if js["code"] == "00000":
+            for d in reversed(js["data"]):
                 arr.append([
-                    int(d[0]),                 # start timestamp
-                    float(d[1]),               # open
-                    float(d[2]),               # high
-                    float(d[3]),               # low
-                    float(d[4]),               # close
-                    float(d[5]),               # volume
+                    int(d[0]),           # timestamp
+                    float(d[1]),         # open
+                    float(d[2]),         # high
+                    float(d[3]),         # low
+                    float(d[4]),         # close
+                    float(d[5]),         # volume
                 ])
     return arr
 
 # === 잔고 내에서만 진입 허용 ===
-def total_position_amount(positions, stg):
+def total_position_amount():
     total = 0
     for sym in SYMBOLS:
-        for side in ("long", "short"):
-            pos = positions[stg][sym][side]
-            if pos:
-                total += SYMBOLS[sym]["amount"]
+        if positions[sym]:
+            total += SYMBOLS[sym]["amount"]
     return total
 
-def can_open_position(positions, balances, stg, symbol):
-    remain = balances[stg] - total_position_amount(positions, stg)
+def can_open_position(symbol):
+    remain = balance - total_position_amount()
     return remain >= SYMBOLS[symbol]["amount"]
 
 # === 진입 / 청산 시뮬레이션 (레버리지 실전 적용, 익절/손절 카운팅) ===
-def close_position(stg, symbol, side, price, reason, pnl_force=None):
-    global balances, positions, take_profit_count, stop_loss_count
-    pos = positions[stg][symbol][side]
+def close_position(symbol, side, price, reason, pnl_force=None):
+    global balance, positions, take_profit_count, stop_loss_count
+    pos = positions[symbol]
     if not pos: return
     entry = pos["entry_price"]
     pnl_pct = (price - entry) / entry
     if side == "short": pnl_pct *= -1
     leverage = SYMBOLS[symbol]["leverage"]
     profit = SYMBOLS[symbol]["amount"] * pnl_pct * leverage
-    balances[stg] += profit
-    positions[stg][symbol][side] = None
-    # 손절/익절 카운트 (pnl_force가 있으면 강제)
+    balance += profit
+    positions[symbol] = None
     is_tp = pnl_force=="tp" or (pnl_force is None and pnl_pct > 0)
     is_sl = pnl_force=="sl" or (pnl_force is None and pnl_pct < 0)
-    if is_tp:
-        take_profit_count[stg] += 1
-    if is_sl:
-        stop_loss_count[stg] += 1
+    if is_tp: take_profit_count += 1
+    if is_sl: stop_loss_count += 1
     send_telegram(
-        f"[전략{stg}] {symbol} {side.upper()} 청산 @ {price}\n"
+        f"{symbol} {side.upper()} 청산 @ {price}\n"
         f"수익률: {pnl_pct*100:.2f}% (레버리지 적용시 {pnl_pct*leverage*100:.2f}%)\n"
         f"실현손익: ${profit:.2f}\n"
-        f"잔액: ${balances[stg]:.2f} / 사유: {reason}"
+        f"잔액: ${balance:.2f} / 사유: {reason}"
     )
 
-def open_position(stg, symbol, side, entry_price):
+def open_position(symbol, side, entry_price):
     conf = SYMBOLS[symbol]
     qty = round(conf["amount"] / entry_price * conf["leverage"], 6)
-    positions[stg][symbol][side] = {
+    positions[symbol] = {
         "side": side,
         "entry_price": entry_price,
         "qty": qty,
@@ -148,41 +126,18 @@ def open_position(stg, symbol, side, entry_price):
         "lowest": entry_price if side == "short" else None,
         "trailing_active": False
     }
-    send_telegram(f"[전략{stg}] 🚀 {symbol} {side.upper()} 진입 @ {entry_price}")
+    send_telegram(f"🚀 {symbol} {side.upper()} 진입 @ {entry_price}")
 
-# === 캔들 관리 (초기 과거캔들 + 실시간 연동) ===
-candles_5m = {s: [] for s in SYMBOLS}
+# === 캔들 관리 ===
 candles_15m = {s: [] for s in SYMBOLS}
-candles_30m = {s: [] for s in SYMBOLS}
 
 # === 초기캔들 불러오기 (서버 켤 때 1회) ===
 for s in SYMBOLS:
-    candles_5m[s] = fetch_bybit_candles(s, "5", limit=60)
-    candles_15m[s] = fetch_bybit_candles(s, "15", limit=50)
-    candles_30m[s] = fetch_bybit_candles(s, "30", limit=52)
-
-def on_msg_5m(symbol, d):
-    ts = int(d['start'])
-    o = float(d['open'])
-    h = float(d['high'])
-    l = float(d['low'])
-    c = float(d['close'])
-    v = float(d['volume'])
-    arr = candles_5m[symbol]
-    if arr and arr[-1][0] == ts:
-        arr[-1] = [ts, o, h, l, c, v]
-    else:
-        arr.append([ts, o, h, l, c, v])
-        if len(arr) > 200: arr.pop(0)
-        analyze_A(symbol)
+    candles_15m[s] = fetch_bitget_candles(s, "15m", limit=50)
 
 def on_msg_15m(symbol, d):
-    ts = int(d['start'])
-    o = float(d['open'])
-    h = float(d['high'])
-    l = float(d['low'])
-    c = float(d['close'])
-    v = float(d['volume'])
+    ts = int(d[0])
+    o, h, l, c, v = map(float, d[1:6])
     arr = candles_15m[symbol]
     if arr and arr[-1][0] == ts:
         arr[-1] = [ts, o, h, l, c, v]
@@ -190,234 +145,95 @@ def on_msg_15m(symbol, d):
         arr.append([ts, o, h, l, c, v])
         if len(arr) > 200: arr.pop(0)
         analyze_B(symbol)
-        analyze_C(symbol)
 
-def on_msg_30m(symbol, d):
-    ts = int(d['start'])
-    o = float(d['open'])
-    h = float(d['high'])
-    l = float(d['low'])
-    c = float(d['close'])
-    v = float(d['volume'])
-    arr = candles_30m[symbol]
-    if arr and arr[-1][0] == ts:
-        arr[-1] = [ts, o, h, l, c, v]
-    else:
-        arr.append([ts, o, h, l, c, v])
-        if len(arr) > 100: arr.pop(0)
-        analyze_trend_30m(symbol)
-
-def analyze_trend_30m(symbol):
-    arr = candles_30m[symbol]
-    if len(arr) < 52: return
-    close = np.array(arr)[:,4]
-    ema20 = calc_ema(close, 20)
-    ema50 = calc_ema(close, 50)
-    if ema20[-2] < ema50[-2] and ema20[-1] > ema50[-1]:
-        trend_30m[symbol] = "long"
-        send_telegram(f"[전략A] {symbol} 30분봉 골든크로스!")
-    elif ema20[-2] > ema50[-2] and ema20[-1] < ema50[-1]:
-        trend_30m[symbol] = "short"
-        send_telegram(f"[전략A] {symbol} 30분봉 데드크로스!")
-
-# === 전략A: 30m 추세+5m 교차(ADX없이) ===
-def analyze_A(symbol):
-    if not running_flag: return
-    arr = candles_5m[symbol]
-    if len(arr) < 52: return
-    close = np.array(arr)[:,4]
-    ema20 = calc_ema(close, 20)
-    ema50 = calc_ema(close, 50)
-    cond_long = (trend_30m[symbol]=="long" and ema20[-2]<ema50[-2] and ema20[-1]>ema50[-1])
-    cond_short = (trend_30m[symbol]=="short" and ema20[-2]>ema50[-2] and ema20[-1]<ema50[-1])
-    price = close[-1]
-    pos_long = positions["A"][symbol]["long"]
-    pos_short = positions["A"][symbol]["short"]
-    conf = SYMBOLS[symbol]
-    # 롱
-    if pos_long:
-        if price <= pos_long["entry_price"] * conf["stop"]:
-            close_position("A", symbol, "long", price, "손절", pnl_force="sl")
-            return
-        if not pos_long["trailing_active"] and price >= pos_long["entry_price"] * conf["tp"]:
-            pos_long["trailing_active"] = True
-            pos_long["highest"] = price
-            send_telegram(f"[전략A] {symbol} 롱 트레일링 활성화(5m)")
-        if pos_long["trailing_active"]:
-            pos_long["highest"] = max(pos_long["highest"], price)
-            if price <= pos_long["highest"] * conf["trail"]:
-                close_position("A", symbol, "long", price, "익절 트레일링", pnl_force="tp")
-                return
-    elif cond_long and can_open_position(positions, balances, "A", symbol):
-        open_position("A", symbol, "long", price)
-    # 숏
-    if pos_short:
-        if price >= pos_short["entry_price"] * (2 - conf["stop"]):
-            close_position("A", symbol, "short", price, "손절", pnl_force="sl")
-            return
-        if not pos_short["trailing_active"] and price <= pos_short["entry_price"] * (2 - conf["tp"]):
-            pos_short["trailing_active"] = True
-            pos_short["lowest"] = price
-            send_telegram(f"[전략A] {symbol} 숏 트레일링 활성화(5m)")
-        if pos_short["trailing_active"]:
-            pos_short["lowest"] = min(pos_short["lowest"], price)
-            if price >= pos_short["lowest"] * (2 - conf["trail"]):
-                close_position("A", symbol, "short", price, "익절 트레일링", pnl_force="tp")
-                return
-    elif cond_short and can_open_position(positions, balances, "A", symbol):
-        open_position("A", symbol, "short", price)
-
-# === 전략B: MACD+ADX 15m ===
 def analyze_B(symbol):
     if not running_flag: return
-    arr = candles_15m[symbol]
-    if len(arr) < 50: return
-    close = np.array(arr)[:,4]
+    arr = np.array(candles_15m[symbol])
+    if len(arr) < 30: return
+    close = arr[:,4]
     macd_hist = calc_macd_hist(close)
-    adx = calc_adx(np.array(arr))
+    adx = calc_adx(arr)
     cond_long = macd_hist[-2] < 0 and macd_hist[-1] > 0 and adx[-1] > 25
     cond_short = macd_hist[-2] > 0 and macd_hist[-1] < 0 and adx[-1] > 25
     price = close[-1]
-    pos_long = positions["B"][symbol]["long"]
-    pos_short = positions["B"][symbol]["short"]
+    pos = positions[symbol]
     conf = SYMBOLS[symbol]
     # 롱
-    if pos_long:
-        if price <= pos_long["entry_price"] * conf["stop"]:
-            close_position("B", symbol, "long", price, "손절", pnl_force="sl")
+    if pos and pos["side"] == "long":
+        if price <= pos["entry_price"] * conf["stop"]:
+            close_position(symbol, "long", price, "손절", pnl_force="sl")
             return
-        if not pos_long["trailing_active"] and price >= pos_long["entry_price"] * conf["tp"]:
-            pos_long["trailing_active"] = True
-            pos_long["highest"] = price
-            send_telegram(f"[전략B] {symbol} 롱 트레일링 활성화(15m)")
-        if pos_long["trailing_active"]:
-            pos_long["highest"] = max(pos_long["highest"], price)
-            if price <= pos_long["highest"] * conf["trail"]:
-                close_position("B", symbol, "long", price, "익절 트레일링", pnl_force="tp")
+        if not pos["trailing_active"] and price >= pos["entry_price"] * conf["tp"]:
+            pos["trailing_active"] = True
+            pos["highest"] = price
+            send_telegram(f"{symbol} 롱 트레일링 활성화(15m)")
+        if pos["trailing_active"]:
+            pos["highest"] = max(pos["highest"], price)
+            if price <= pos["highest"] * conf["trail"]:
+                close_position(symbol, "long", price, "익절 트레일링", pnl_force="tp")
                 return
-    elif cond_long and can_open_position(positions, balances, "B", symbol):
-        open_position("B", symbol, "long", price)
     # 숏
-    if pos_short:
-        if price >= pos_short["entry_price"] * (2 - conf["stop"]):
-            close_position("B", symbol, "short", price, "손절", pnl_force="sl")
+    if pos and pos["side"] == "short":
+        if price >= pos["entry_price"] * (2 - conf["stop"]):
+            close_position(symbol, "short", price, "손절", pnl_force="sl")
             return
-        if not pos_short["trailing_active"] and price <= pos_short["entry_price"] * (2 - conf["tp"]):
-            pos_short["trailing_active"] = True
-            pos_short["lowest"] = price
-            send_telegram(f"[전략B] {symbol} 숏 트레일링 활성화(15m)")
-        if pos_short["trailing_active"]:
-            pos_short["lowest"] = min(pos_short["lowest"], price)
-            if price >= pos_short["lowest"] * (2 - conf["trail"]):
-                close_position("B", symbol, "short", price, "익절 트레일링", pnl_force="tp")
+        if not pos["trailing_active"] and price <= pos["entry_price"] * (2 - conf["tp"]):
+            pos["trailing_active"] = True
+            pos["lowest"] = price
+            send_telegram(f"{symbol} 숏 트레일링 활성화(15m)")
+        if pos["trailing_active"]:
+            pos["lowest"] = min(pos["lowest"], price)
+            if price >= pos["lowest"] * (2 - conf["trail"]):
+                close_position(symbol, "short", price, "익절 트레일링", pnl_force="tp")
                 return
-    elif cond_short and can_open_position(positions, balances, "B", symbol):
-        open_position("B", symbol, "short", price)
+    # 진입
+    if pos is None:
+        if cond_long and can_open_position(symbol):
+            open_position(symbol, "long", price)
+        elif cond_short and can_open_position(symbol):
+            open_position(symbol, "short", price)
 
-# === 전략C: CCI 15m ===
-def analyze_C(symbol):
-    if not running_flag: return
-    arr = candles_15m[symbol]
-    if len(arr) < 20: return
-    cci = calc_cci(np.array(arr), 14)
-    price = np.array(arr)[:,4][-1]
-    cond_long = cci[-1] < -150
-    cond_short = cci[-1] > 150
-    pos_long = positions["C"][symbol]["long"]
-    pos_short = positions["C"][symbol]["short"]
-    conf = SYMBOLS[symbol]
-    # 롱
-    if pos_long:
-        if price <= pos_long["entry_price"] * conf["stop"]:
-            close_position("C", symbol, "long", price, "손절", pnl_force="sl")
-            return
-        if not pos_long["trailing_active"] and price >= pos_long["entry_price"] * conf["tp"]:
-            pos_long["trailing_active"] = True
-            pos_long["highest"] = price
-            send_telegram(f"[전략C] {symbol} 롱 트레일링 활성화(15m)")
-        if pos_long["trailing_active"]:
-            pos_long["highest"] = max(pos_long["highest"], price)
-            if price <= pos_long["highest"] * conf["trail"]:
-                close_position("C", symbol, "long", price, "익절 트레일링", pnl_force="tp")
-                return
-    elif cond_long and can_open_position(positions, balances, "C", symbol):
-        open_position("C", symbol, "long", price)
-    # 숏
-    if pos_short:
-        if price >= pos_short["entry_price"] * (2 - conf["stop"]):
-            close_position("C", symbol, "short", price, "손절", pnl_force="sl")
-            return
-        if not pos_short["trailing_active"] and price <= pos_short["entry_price"] * (2 - conf["tp"]):
-            pos_short["trailing_active"] = True
-            pos_short["lowest"] = price
-            send_telegram(f"[전략C] {symbol} 숏 트레일링 활성화(15m)")
-        if pos_short["trailing_active"]:
-            pos_short["lowest"] = min(pos_short["lowest"], price)
-            if price >= pos_short["lowest"] * (2 - conf["trail"]):
-                close_position("C", symbol, "short", price, "익절 트레일링", pnl_force="tp")
-                return
-    elif cond_short and can_open_position(positions, balances, "C", symbol):
-        open_position("C", symbol, "short", price)
-
-# === WebSocket 루프(바이비트, 5m/15m/30m 동시 구독) ===
+# === WebSocket 루프 (비트겟 15분봉) ===
 async def ws_loop():
-    uri = "wss://stream.bybit.com/v5/public/linear"
-    while True:
-        try:
-            print("🔗 WebSocket 연결 시도...")
-            async with websockets.connect(uri, ping_interval=10, ping_timeout=10) as ws:
-                print("✅ WebSocket 연결됨")
-                sub = {
-                    "op": "subscribe",
-                    "args": (
-                        [f"kline.5.{s}" for s in SYMBOLS] +
-                        [f"kline.15.{s}" for s in SYMBOLS] +
-                        [f"kline.30.{s}" for s in SYMBOLS]
-                    )
-                }
-                await ws.send(json.dumps(sub))
-                while True:
-                    raw = await ws.recv()
-                    msg = json.loads(raw)
-                    topic = msg.get("topic", "")
-                    if topic.startswith("kline.5.") and msg.get("data"):
-                        symbol = topic.split(".")[-1]
-                        on_msg_5m(symbol, msg["data"][0])
-                    if topic.startswith("kline.15.") and msg.get("data"):
-                        symbol = topic.split(".")[-1]
-                        on_msg_15m(symbol, msg["data"][0])
-                    if topic.startswith("kline.30.") and msg.get("data"):
-                        symbol = topic.split(".")[-1]
-                        on_msg_30m(symbol, msg["data"][0])
-        except Exception as e:
-            print(f"❌ WebSocket 오류: {e}")
-            print("⏳ 3초 후 재연결 시도...")
-            await asyncio.sleep(3)
+    uri = "wss://ws.bitget.com/v2/ws/public"
+    async with websockets.connect(uri, ping_interval=20) as ws:
+        sub = {
+            "op": "subscribe",
+            "args": [
+                {"instType": "USDT-FUTURES", "channel": "candle15m", "instId": s}
+                for s in SYMBOLS
+            ]
+        }
+        await ws.send(json.dumps(sub))
+        print("✅ WebSocket 연결됨 (Bitget 15m)")
+        while True:
+            msg = json.loads(await ws.recv())
+            if "data" in msg and msg["data"]:
+                symbol = msg["arg"]["instId"]
+                on_msg_15m(symbol, msg["data"][0])
 
-# === 1시간 리포트 (전략별 잔고/익절/손절 카운트 포함) ===
+# === 1시간 리포트 (전략B만) ===
 def report_telegram():
     global report_flag
     while report_flag:
         msg = []
-        for stg, desc in STRATEGIES.items():
-            msg.append(f"전략{stg}({desc})")
-            for sym in SYMBOLS:
-                for side in ("long", "short"):
-                    pos = positions[stg][sym][side]
-                    if pos:
-                        entry = pos['entry_price']
-                        price_now = entry
-                        arr = candles_5m.get(sym) if stg=="A" else candles_15m.get(sym)
-                        if arr and len(arr)>0:
-                            price_now = arr[-1][4]
-                        pnl = (price_now - entry) / entry * 100
-                        if side == "short": pnl *= -1
-                        trail_state = "O" if pos.get("trailing_active") else "X"
-                        msg.append(f"{sym} | {side.upper()} | 진입가: {entry} | 수익률: {pnl:.2f}% | 트레일링:{trail_state}")
-                if not positions[stg][sym]["long"] and not positions[stg][sym]["short"]:
-                    msg.append(f"{sym} | 포지션: - | 진입가: -")
-            msg.append(f"현재 가상잔고: {balances[stg]:.2f}")
-            msg.append(f"누적 익절: {take_profit_count[stg]}회 / 누적 손절: {stop_loss_count[stg]}회\n")
+        msg.append("전략B(MACD7-17-8+ADX5, 15m)")
+        for sym in SYMBOLS:
+            pos = positions[sym]
+            if pos:
+                entry = pos['entry_price']
+                arr = candles_15m.get(sym)
+                price_now = entry
+                if arr and len(arr)>0:
+                    price_now = arr[-1][4]
+                pnl = (price_now - entry) / entry * 100
+                if pos["side"] == "short": pnl *= -1
+                trail_state = "O" if pos.get("trailing_active") else "X"
+                msg.append(f"{sym} | {pos['side'].upper()} | 진입가: {entry} | 수익률: {pnl:.2f}% | 트레일링:{trail_state}")
+            else:
+                msg.append(f"{sym} | 포지션: - | 진입가: -")
+        msg.append(f"현재 가상잔고: {balance:.2f}")
+        msg.append(f"누적 익절: {take_profit_count}회 / 누적 손절: {stop_loss_count}회\n")
         send_telegram("\n".join(msg))
         for _ in range(3600):
             if not report_flag:
@@ -442,38 +258,33 @@ def hook():
             running_flag = False
             report_flag = False
             send_telegram("⛔ 자동매매 중지\n모든 포지션 정리중...")
-            for stg in STRATEGIES:
-                for sym in SYMBOLS:
-                    for side in ("long", "short"):
-                        pos = positions[stg][sym][side]
-                        if pos:
-                            arr = candles_5m.get(sym) if stg=="A" else candles_15m.get(sym)
-                            price_now = pos["entry_price"]
-                            if arr and len(arr)>0:
-                                price_now = arr[-1][4]
-                            close_position(stg, sym, side, price_now, "자동매매 중지(전체 청산)")
+            for sym in SYMBOLS:
+                pos = positions[sym]
+                if pos:
+                    arr = candles_15m.get(sym)
+                    price_now = pos["entry_price"]
+                    if arr and len(arr)>0:
+                        price_now = arr[-1][4]
+                    close_position(sym, pos["side"], price_now, "자동매매 중지(전체 청산)")
             send_telegram("✅ 모든 포지션 정리 완료")
         elif text == "/상태":
-            msgtxt = ""
-            for stg, desc in STRATEGIES.items():
-                msgtxt += f"전략{stg}({desc})\n"
-                for sym in SYMBOLS:
-                    for side in ("long", "short"):
-                        pos = positions[stg][sym][side]
-                        if pos:
-                            entry = pos['entry_price']
-                            arr = candles_5m.get(sym) if stg=="A" else candles_15m.get(sym)
-                            price_now = entry
-                            if arr and len(arr)>0:
-                                price_now = arr[-1][4]
-                            pnl = (price_now - entry) / entry * 100
-                            if side == "short": pnl *= -1
-                            trail_state = "O" if pos.get("trailing_active") else "X"
-                            msgtxt += f"{sym} {side.upper()} @ {entry} | 수익률: {pnl:.2f}% | 트레일링:{trail_state}\n"
-                    if not positions[stg][sym]["long"] and not positions[stg][sym]["short"]:
-                        msgtxt += f"{sym} 포지션 없음\n"
-                msgtxt += f"현재 가상잔고: {balances[stg]:.2f}\n"
-                msgtxt += f"누적 익절: {take_profit_count[stg]}회 / 누적 손절: {stop_loss_count[stg]}회\n\n"
+            msgtxt = "전략B(MACD7-17-8+ADX5, 15m)\n"
+            for sym in SYMBOLS:
+                pos = positions[sym]
+                if pos:
+                    entry = pos['entry_price']
+                    arr = candles_15m.get(sym)
+                    price_now = entry
+                    if arr and len(arr)>0:
+                        price_now = arr[-1][4]
+                    pnl = (price_now - entry) / entry * 100
+                    if pos["side"] == "short": pnl *= -1
+                    trail_state = "O" if pos.get("trailing_active") else "X"
+                    msgtxt += f"{sym} {pos['side'].upper()} @ {entry} | 수익률: {pnl:.2f}% | 트레일링:{trail_state}\n"
+                else:
+                    msgtxt += f"{sym} 포지션 없음\n"
+            msgtxt += f"현재 가상잔고: {balance:.2f}\n"
+            msgtxt += f"누적 익절: {take_profit_count}회 / 누적 손절: {stop_loss_count}회\n\n"
             send_telegram(msgtxt)
     return "ok"
 
@@ -482,3 +293,4 @@ if __name__ == "__main__":
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=5000)).start()
     threading.Thread(target=report_telegram, daemon=True).start()
     asyncio.run(ws_loop())
+
