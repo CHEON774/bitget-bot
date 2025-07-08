@@ -61,25 +61,30 @@ def fetch_bitget_candles(symbol, interval, limit=100):
     url = "https://api.bitget.com/api/v2/market/history-candles"
     params = {
         "instId": symbol,
-        "bar": interval,
+        "bar": interval,  # '15m'
         "limit": limit
     }
-    resp = requests.get(url, params=params)
-    arr = []
-    if resp.status_code == 200:
-        js = resp.json()
-        if js["code"] == "00000":
-            for d in reversed(js["data"]):
-                arr.append([
-                    int(d[0]),
-                    float(d[1]),
-                    float(d[2]),
-                    float(d[3]),
-                    float(d[4]),
-                    float(d[5]),
-                ])
-    return arr
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        arr = []
+        if resp.status_code == 200:
+            js = resp.json()
+            if js.get("code") == "00000":
+                for d in reversed(js["data"]):
+                    arr.append([
+                        int(d[0]),           # timestamp
+                        float(d[1]),         # open
+                        float(d[2]),         # high
+                        float(d[3]),         # low
+                        float(d[4]),         # close
+                        float(d[5]),         # volume
+                    ])
+        return arr
+    except Exception as e:
+        print("과거캔들 fetch 실패:", e)
+        return []
 
+# === 잔고 내에서만 진입 허용 ===
 def total_position_amount():
     total = 0
     for sym in SYMBOLS:
@@ -91,6 +96,7 @@ def can_open_position(symbol):
     remain = balance - total_position_amount()
     return remain >= SYMBOLS[symbol]["amount"]
 
+# === 진입 / 청산 시뮬레이션 (레버리지 실전 적용, 익절/손절 카운팅) ===
 def close_position(symbol, side, price, reason, pnl_force=None):
     global balance, positions, take_profit_count, stop_loss_count
     pos = positions[symbol]
@@ -126,9 +132,10 @@ def open_position(symbol, side, entry_price):
     }
     send_telegram(f"🚀 {symbol} {side.upper()} 진입 @ {entry_price}")
 
+# === 캔들 관리 ===
 candles_15m = {s: [] for s in SYMBOLS}
 
-# === 초기캔들 불러오기 ===
+# === 초기캔들 불러오기 (서버 켤 때 1회) ===
 for s in SYMBOLS:
     candles_15m[s] = fetch_bitget_candles(s, "15m", limit=50)
 
@@ -190,12 +197,12 @@ def analyze_B(symbol):
         elif cond_short and can_open_position(symbol):
             open_position(symbol, "short", price)
 
-# === WebSocket 루프 (비트겟 15분봉) ===
+# === WebSocket 루프 (Bitget 15m, 수동 ping/pong 포함, 자동재연결/에러방지) ===
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
     while True:
         try:
-            async with websockets.connect(uri, ping_interval=20) as ws:
+            async with websockets.connect(uri, ping_interval=None, ping_timeout=None) as ws:
                 sub = {
                     "op": "subscribe",
                     "args": [
@@ -205,11 +212,30 @@ async def ws_loop():
                 }
                 await ws.send(json.dumps(sub))
                 print("✅ WebSocket 연결됨 (Bitget 15m)")
+                last_ping = time.time()
                 while True:
-                    msg = json.loads(await ws.recv())
-                    if "data" in msg and msg["data"]:
-                        symbol = msg["arg"]["instId"]
-                        on_msg_15m(symbol, msg["data"][0])
+                    # 30초마다 수동 ping
+                    if time.time() - last_ping > 30:
+                        try:
+                            await ws.ping()
+                            last_ping = time.time()
+                        except Exception as e:
+                            print("ping 실패:", e)
+                            break
+                    try:
+                        msg = await asyncio.wait_for(ws.recv(), timeout=35)
+                        if "data" in msg:
+                            msg = json.loads(msg)
+                        if "data" in msg and msg["data"]:
+                            symbol = msg["arg"]["instId"]
+                            on_msg_15m(symbol, msg["data"][0])
+                    except asyncio.TimeoutError:
+                        try:
+                            await ws.ping()
+                            last_ping = time.time()
+                        except Exception as e:
+                            print("ping timeout 실패:", e)
+                            break
         except Exception as e:
             print(f"❌ WebSocket 오류: {e}")
             print("⏳ 3초 후 재연결 시도...")
@@ -220,7 +246,7 @@ def report_telegram():
     global report_flag
     while report_flag:
         msg = []
-        msg.append("전략B(MACD7-17-8+ADX5, 15m)")
+        msg.append("1억 가즈아")
         for sym in SYMBOLS:
             pos = positions[sym]
             if pos:
@@ -296,4 +322,3 @@ if __name__ == "__main__":
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=5000)).start()
     threading.Thread(target=report_telegram, daemon=True).start()
     asyncio.run(ws_loop())
-
