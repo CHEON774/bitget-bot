@@ -7,12 +7,12 @@ import pandas as pd
 # === 설정 ===
 SYMBOLS = {
     "BTCUSDT": {"leverage": 10, "amount": 150, "stop": 0.99,  "tp": 1.015, "trail": 0.995},
-    "ETHUSDT": {"leverage": 7,  "amount": 100,  "stop": 0.988, "tp": 1.02,  "trail": 0.992},
+    "ETHUSDT": {"leverage": 7,  "amount": 100, "stop": 0.988, "tp": 1.02,  "trail": 0.992},
     "SOLUSDT": {"leverage": 5,  "amount": 70,  "stop": 0.98,  "tp": 1.03,  "trail": 0.99},
 }
 INIT_BALANCE = 756.0
 
-positions = {s: None for s in SYMBOLS}  # 단일포지션(롱/숏 중 1개만)
+positions = {s: None for s in SYMBOLS}
 balance = INIT_BALANCE
 take_profit_count = 0
 stop_loss_count = 0
@@ -61,7 +61,7 @@ def fetch_bitget_candles(symbol, interval, limit=100):
     url = "https://api.bitget.com/api/v2/market/history-candles"
     params = {
         "instId": symbol,
-        "bar": interval,  # '15m'
+        "bar": interval,
         "limit": limit
     }
     resp = requests.get(url, params=params)
@@ -71,16 +71,15 @@ def fetch_bitget_candles(symbol, interval, limit=100):
         if js["code"] == "00000":
             for d in reversed(js["data"]):
                 arr.append([
-                    int(d[0]),           # timestamp
-                    float(d[1]),         # open
-                    float(d[2]),         # high
-                    float(d[3]),         # low
-                    float(d[4]),         # close
-                    float(d[5]),         # volume
+                    int(d[0]),
+                    float(d[1]),
+                    float(d[2]),
+                    float(d[3]),
+                    float(d[4]),
+                    float(d[5]),
                 ])
     return arr
 
-# === 잔고 내에서만 진입 허용 ===
 def total_position_amount():
     total = 0
     for sym in SYMBOLS:
@@ -92,7 +91,6 @@ def can_open_position(symbol):
     remain = balance - total_position_amount()
     return remain >= SYMBOLS[symbol]["amount"]
 
-# === 진입 / 청산 시뮬레이션 (레버리지 실전 적용, 익절/손절 카운팅) ===
 def close_position(symbol, side, price, reason, pnl_force=None):
     global balance, positions, take_profit_count, stop_loss_count
     pos = positions[symbol]
@@ -128,10 +126,9 @@ def open_position(symbol, side, entry_price):
     }
     send_telegram(f"🚀 {symbol} {side.upper()} 진입 @ {entry_price}")
 
-# === 캔들 관리 ===
 candles_15m = {s: [] for s in SYMBOLS}
 
-# === 초기캔들 불러오기 (서버 켤 때 1회) ===
+# === 초기캔들 불러오기 ===
 for s in SYMBOLS:
     candles_15m[s] = fetch_bitget_candles(s, "15m", limit=50)
 
@@ -196,21 +193,27 @@ def analyze_B(symbol):
 # === WebSocket 루프 (비트겟 15분봉) ===
 async def ws_loop():
     uri = "wss://ws.bitget.com/v2/ws/public"
-    async with websockets.connect(uri, ping_interval=20) as ws:
-        sub = {
-            "op": "subscribe",
-            "args": [
-                {"instType": "USDT-FUTURES", "channel": "candle15m", "instId": s}
-                for s in SYMBOLS
-            ]
-        }
-        await ws.send(json.dumps(sub))
-        print("✅ WebSocket 연결됨 (Bitget 15m)")
-        while True:
-            msg = json.loads(await ws.recv())
-            if "data" in msg and msg["data"]:
-                symbol = msg["arg"]["instId"]
-                on_msg_15m(symbol, msg["data"][0])
+    while True:
+        try:
+            async with websockets.connect(uri, ping_interval=20) as ws:
+                sub = {
+                    "op": "subscribe",
+                    "args": [
+                        {"instType": "USDT-FUTURES", "channel": "candle15m", "instId": s}
+                        for s in SYMBOLS
+                    ]
+                }
+                await ws.send(json.dumps(sub))
+                print("✅ WebSocket 연결됨 (Bitget 15m)")
+                while True:
+                    msg = json.loads(await ws.recv())
+                    if "data" in msg and msg["data"]:
+                        symbol = msg["arg"]["instId"]
+                        on_msg_15m(symbol, msg["data"][0])
+        except Exception as e:
+            print(f"❌ WebSocket 오류: {e}")
+            print("⏳ 3초 후 재연결 시도...")
+            await asyncio.sleep(3)
 
 # === 1시간 리포트 (전략B만) ===
 def report_telegram():
