@@ -14,7 +14,12 @@ TP   = 1.022   # +2.2%
 TRAIL= 0.995   # -0.5% from peak (롱) / +0.5% from bottom (숏)
 INIT_BALANCE = 756.0
 
-# 각 전략/심볼/방향별 포지션·잔고·카운트 관리
+STRATEGY_LABELS = {
+    "A": "전략A (볼린저밴드20,2.5+ATR14_1.5배)",
+    "B": "전략B (RSI14+Stoch14,3+ATR14_1.5배)",
+    "C": "전략C (OBV+볼밴20,2.5)"
+}
+
 positions = {k: {s: {'long': None, 'short': None} for s in SYMBOLS} for k in ['A','B','C']}
 balance = {k: INIT_BALANCE for k in ['A','B','C']}
 tp_count = {k: 0 for k in ['A','B','C']}
@@ -26,7 +31,6 @@ report_flag = True
 TELEGRAM_TOKEN = "7776435078:AAFsM_jIDSx1Eij4YJyqJp-zEDtQVtKohnU"
 TELEGRAM_CHAT_ID = "1797494660"
 
-# === 텔레그램 ===
 def send_telegram(msg):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -34,7 +38,6 @@ def send_telegram(msg):
         requests.post(url, data=data)
     except: pass
 
-# === 바이비트 과거 캔들 불러오기 ===
 def fetch_bybit_candles(symbol, interval, limit=100):
     url = "https://api.bybit.com/v5/market/kline"
     params = {
@@ -62,7 +65,6 @@ def fetch_bybit_candles(symbol, interval, limit=100):
         print("캔들 fetch 실패:", e)
         return []
 
-# === 지표 계산 ===
 def calc_atr(df, period=14):
     high, low, close = df[:,2], df[:,3], df[:,4]
     tr = np.maximum.reduce([
@@ -108,10 +110,8 @@ def calc_obv(close, volume):
         )
     return np.array(obv)
 
-# === 캔들 관리 ===
 candles = {s: fetch_bybit_candles(s, "15", limit=100) for s in SYMBOLS}
 
-# === 진입/청산 ===
 def open_position(strategy, symbol, side, entry):
     global positions
     conf = SYMBOLS[symbol]
@@ -119,7 +119,7 @@ def open_position(strategy, symbol, side, entry):
     positions[strategy][symbol][side] = {
         "entry": entry, "qty": qty, "peak": entry, "active_trail": False
     }
-    send_telegram(f"🚀 [{strategy}] {symbol} {side.upper()} 진입 @ {entry}")
+    send_telegram(f"🚀 [{STRATEGY_LABELS[strategy]}] {symbol} {side.upper()} 진입 @ {entry}")
 
 def close_position(strategy, symbol, side, price, reason, force=None):
     global positions, balance, tp_count, sl_count
@@ -136,9 +136,7 @@ def close_position(strategy, symbol, side, price, reason, force=None):
     sl_flag = force=="sl" or (force is None and pnl_pct < 0)
     if tp_flag: tp_count[strategy] += 1
     if sl_flag: sl_count[strategy] += 1
-    send_telegram(f"💸 [{strategy}] {symbol} {side.upper()} 청산 @ {price}\n수익률: {pnl_pct*100:.2f}% (X{lev})\n잔고: ${balance[strategy]:.2f} / 사유: {reason}")
-
-# === 전략별 분석 ===
+    send_telegram(f"💸 [{STRATEGY_LABELS[strategy]}] {symbol} {side.upper()} 청산 @ {price}\n수익률: {pnl_pct*100:.2f}% (X{lev})\n잔고: ${balance[strategy]:.2f} / 사유: {reason}")
 
 def analyze_A(symbol):
     arr = np.array(candles[symbol])
@@ -148,30 +146,25 @@ def analyze_A(symbol):
     atr = calc_atr(arr, 14)
     atr_ref = pd.Series(atr).rolling(10).mean().values
     price = close[-1]
-    # --- 롱 (하단 이탈 + ATR 조건)
     if positions["A"][symbol]['long'] is None:
         if price < lower[-1] and atr[-1] > 1.5 * atr_ref[-1]:
             open_position("A", symbol, "long", price)
-    # --- 숏 (상단 돌파 + ATR 조건)
     if positions["A"][symbol]['short'] is None:
         if price > upper[-1] and atr[-1] > 1.5 * atr_ref[-1]:
             open_position("A", symbol, "short", price)
-    # --- 청산
     for side in ['long', 'short']:
         pos = positions["A"][symbol][side]
         if not pos: continue
         entry = pos["entry"]
         pnl = (price - entry) / entry
         if side == "short": pnl *= -1
-        # 손절
         if pnl <= -(1-STOP):
             close_position("A", symbol, side, price, "손절", force="sl")
             continue
-        # 익절+트레일링
         if not pos["active_trail"] and pnl >= (TP-1):
             pos["active_trail"] = True
             pos["peak"] = price
-            send_telegram(f"[A] {symbol} {side.upper()} 트레일링 활성화")
+            send_telegram(f"[{STRATEGY_LABELS['A']}] {symbol} {side.upper()} 트레일링 활성화")
         if pos["active_trail"]:
             if side == "long":
                 pos["peak"] = max(pos["peak"], price)
@@ -192,30 +185,25 @@ def analyze_B(symbol):
     atr = calc_atr(arr, 14)
     atr_ref = pd.Series(atr).rolling(10).mean().values
     price = close[-1]
-    # 롱
     if positions["B"][symbol]['long'] is None:
         if rsi[-1] < 20 and k[-1] < 20 and atr[-1] > 1.5 * atr_ref[-1]:
             open_position("B", symbol, "long", price)
-    # 숏
     if positions["B"][symbol]['short'] is None:
         if rsi[-1] > 80 and k[-1] > 80 and atr[-1] > 1.5 * atr_ref[-1]:
             open_position("B", symbol, "short", price)
-    # 청산
     for side in ['long', 'short']:
         pos = positions["B"][symbol][side]
         if not pos: continue
         entry = pos["entry"]
         pnl = (price - entry) / entry
         if side == "short": pnl *= -1
-        # 손절
         if pnl <= -(1-STOP):
             close_position("B", symbol, side, price, "손절", force="sl")
             continue
-        # 익절+트레일링
         if not pos["active_trail"] and pnl >= (TP-1):
             pos["active_trail"] = True
             pos["peak"] = price
-            send_telegram(f"[B] {symbol} {side.upper()} 트레일링 활성화")
+            send_telegram(f"[{STRATEGY_LABELS['B']}] {symbol} {side.upper()} 트레일링 활성화")
         if pos["active_trail"]:
             if side == "long":
                 pos["peak"] = max(pos["peak"], price)
@@ -235,33 +223,27 @@ def analyze_C(symbol):
     obv = calc_obv(close, vol)
     upper, lower = calc_bbands(close, 20, 2.5)
     price = close[-1]
-    # OBV 변화량: 최근 3봉 평균변동폭의 2배 이상이면 신호
     obv_chg = abs(obv[-1]-obv[-2])
     obv_ref = np.mean(np.abs(np.diff(obv[-4:-1])))
-    # 롱
     if positions["C"][symbol]['long'] is None:
         if price < lower[-1] and obv_chg > 2 * obv_ref:
             open_position("C", symbol, "long", price)
-    # 숏
     if positions["C"][symbol]['short'] is None:
         if price > upper[-1] and obv_chg > 2 * obv_ref:
             open_position("C", symbol, "short", price)
-    # 청산
     for side in ['long', 'short']:
         pos = positions["C"][symbol][side]
         if not pos: continue
         entry = pos["entry"]
         pnl = (price - entry) / entry
         if side == "short": pnl *= -1
-        # 손절
         if pnl <= -(1-STOP):
             close_position("C", symbol, side, price, "손절", force="sl")
             continue
-        # 익절+트레일링
         if not pos["active_trail"] and pnl >= (TP-1):
             pos["active_trail"] = True
             pos["peak"] = price
-            send_telegram(f"[C] {symbol} {side.upper()} 트레일링 활성화")
+            send_telegram(f"[{STRATEGY_LABELS['C']}] {symbol} {side.upper()} 트레일링 활성화")
         if pos["active_trail"]:
             if side == "long":
                 pos["peak"] = max(pos["peak"], price)
@@ -272,7 +254,6 @@ def analyze_C(symbol):
                 if price >= pos["peak"] / TRAIL:
                     close_position("C", symbol, side, price, "익절(트레일링)", force="tp")
 
-# === WebSocket 루프 (Bybit 15분봉, 수동 ping/pong, 자동재연결) ===
 async def ws_loop():
     uri = "wss://stream.bybit.com/v5/public/linear"
     subscribe = {
@@ -309,7 +290,6 @@ async def ws_loop():
                             else:
                                 arr.append([ts,o,h,l,c,v])
                                 if len(arr) > 200: arr.pop(0)
-                                # --- 3전략 분석 ---
                                 analyze_A(s)
                                 analyze_B(s)
                                 analyze_C(s)
@@ -323,12 +303,11 @@ async def ws_loop():
             print("⏳ 3초 후 재연결 시도...")
             await asyncio.sleep(3)
 
-# === 1시간마다 텔레그램 리포트 ===
 def report_telegram():
     while report_flag:
         msg = []
         for k in ['A','B','C']:
-            msg.append(f"전략{k} | 잔고: {balance[k]:.2f} | 익절:{tp_count[k]} | 손절:{sl_count[k]}")
+            msg.append(STRATEGY_LABELS[k])
             for s in SYMBOLS:
                 for side in ['long','short']:
                     pos = positions[k][s][side]
@@ -341,15 +320,17 @@ def report_telegram():
                         pnl = (price_now-entry)/entry*100
                         if side=="short": pnl *= -1
                         trail = "O" if pos.get("active_trail") else "X"
-                        msg.append(f"{k}-{s}-{side}: 진입가 {entry} | 수익률 {pnl:.2f}% | 트레일:{trail}")
+                        msg.append(f"{s} {side}: 진입가 {entry} | 수익률 {pnl:.2f}% | 트레일:{trail}")
                     else:
-                        msg.append(f"{k}-{s}-{side}: -")
+                        msg.append(f"{s} {side}: 포지션 없음")
+            msg.append(f"현재 가상잔고: {balance[k]:.2f}")
+            msg.append(f"누적 익절: {tp_count[k]}회 / 누적 손절: {sl_count[k]}회")
+            msg.append("")  # 전략 구분 공백줄
         send_telegram('\n'.join(msg))
         for _ in range(3600):
             if not report_flag: break
             time.sleep(1)
 
-# === Flask 텔레그램 명령어 ===
 app = Flask(__name__)
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def hook():
@@ -381,7 +362,7 @@ def hook():
         elif text == "/상태":
             msgtxt = []
             for k in ['A','B','C']:
-                msgtxt.append(f"전략{k} | 잔고: {balance[k]:.2f} | 익절:{tp_count[k]} | 손절:{sl_count[k]}")
+                msgtxt.append(STRATEGY_LABELS[k])
                 for s in SYMBOLS:
                     for side in ['long','short']:
                         pos = positions[k][s][side]
@@ -394,13 +375,15 @@ def hook():
                             pnl = (price_now-entry)/entry*100
                             if side=="short": pnl *= -1
                             trail = "O" if pos.get("active_trail") else "X"
-                            msgtxt.append(f"{k}-{s}-{side}: 진입가 {entry} | 수익률 {pnl:.2f}% | 트레일:{trail}")
+                            msgtxt.append(f"{s} {side}: 진입가 {entry} | 수익률 {pnl:.2f}% | 트레일:{trail}")
                         else:
-                            msgtxt.append(f"{k}-{s}-{side}: -")
+                            msgtxt.append(f"{s} {side}: 포지션 없음")
+                msgtxt.append(f"현재 가상잔고: {balance[k]:.2f}")
+                msgtxt.append(f"누적 익절: {tp_count[k]}회 / 누적 손절: {sl_count[k]}회")
+                msgtxt.append("")
             send_telegram('\n'.join(msgtxt))
     return "ok"
 
-# === 실행 ===
 if __name__ == "__main__":
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=5000)).start()
     threading.Thread(target=report_telegram, daemon=True).start()
