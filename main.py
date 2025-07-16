@@ -10,18 +10,21 @@ SYMBOLS = {
 }
 STOP = 0.992   # -0.8%
 TP   = 1.022   # +2.2%
-TRAIL= 0.995   # -0.5% from peak
+TRAIL= 0.99    # 1.0% 트레일링
 INIT_BALANCE = 756.0
+TAKER_FEE = 0.00044   # 0.044%
 
 STRATEGY_LABELS = {
-    "A": "전략A (MACD히스토그램 2연속봉)",
-    "B": "전략B (MACD+ADX, 임계치, 15m)"
+    "A": "전략A (MACD+ADX)",
+    "B": "전략B (MACD+임계치)",
+    "C": "전략C (MACD+50일선)",
+    "D": "전략D (MACD+ADX+임계치)"
 }
 
-positions = {k: {s: {'long': None, 'short': None} for s in SYMBOLS} for k in ['A','B']}
-balance = {k: INIT_BALANCE for k in ['A','B']}
-tp_count = {k: 0 for k in ['A','B']}
-sl_count = {k: 0 for k in ['A','B']}
+positions = {k: {s: {'long': None, 'short': None} for s in SYMBOLS} for k in ['A','B','C','D']}
+balance = {k: INIT_BALANCE for k in ['A','B','C','D']}
+tp_count = {k: 0 for k in ['A','B','C','D']}
+sl_count = {k: 0 for k in ['A','B','C','D']}
 
 running_flag = True
 report_flag = True
@@ -41,7 +44,7 @@ def fetch_bybit_candles(symbol, interval, limit=100):
     params = {
         "category": "linear",
         "symbol": symbol,
-        "interval": interval,  # '15'
+        "interval": interval,
         "limit": limit
     }
     try:
@@ -84,10 +87,12 @@ def calc_adx(df, period=5):
     pad = len(close) - len(adx)
     return np.concatenate([np.full(pad, np.nan), adx])
 
+def calc_ma(close, period=50):
+    return pd.Series(close).rolling(period).mean().values
+
 candles = {s: fetch_bybit_candles(s, "15", limit=100) for s in SYMBOLS}
 
 def open_position(strategy, symbol, side, entry):
-    global positions
     conf = SYMBOLS[symbol]
     qty = round(conf["amount"] / entry * conf["leverage"], 6)
     positions[strategy][symbol][side] = {
@@ -103,28 +108,34 @@ def close_position(strategy, symbol, side, price, reason, force=None):
     pnl_pct = (price - entry) / entry
     if side == "short": pnl_pct *= -1
     lev = SYMBOLS[symbol]["leverage"]
-    profit = SYMBOLS[symbol]["amount"] * pnl_pct * lev
+    real_pnl = pnl_pct * lev * 100
+    total_fee_pct = TAKER_FEE * 2 * lev * 100   # %
+    net_real_pnl = real_pnl - total_fee_pct      # 순수익률(%)
+    profit = SYMBOLS[symbol]["amount"] * net_real_pnl / 100
     balance[strategy] += profit
     positions[strategy][symbol][side] = None
-    tp_flag = force=="tp" or (force is None and pnl_pct > 0)
-    sl_flag = force=="sl" or (force is None and pnl_pct < 0)
+    tp_flag = force=="tp" or (force is None and net_real_pnl > 0)
+    sl_flag = force=="sl" or (force is None and net_real_pnl < 0)
     if tp_flag: tp_count[strategy] += 1
     if sl_flag: sl_count[strategy] += 1
-    send_telegram(f"💸 [{STRATEGY_LABELS[strategy]}] {symbol} {side.upper()} 청산 @ {price}\n수익률: {pnl_pct*100:.2f}% (X{lev})\n잔고: ${balance[strategy]:.2f} / 사유: {reason}")
+    send_telegram(
+        f"💸 [{STRATEGY_LABELS[strategy]}] {symbol} {side.upper()} 청산 @ {price}\n"
+        f"순수익률: {net_real_pnl:.2f}% (수수료 반영)\n"
+        f"잔고: ${balance[strategy]:.2f} / 사유: {reason}"
+    )
 
 def analyze_A(symbol):
     arr = np.array(candles[symbol])
     if len(arr) < 20: return
     close = arr[:,4]
     _, _, hist = calc_macd(close)
+    adx = calc_adx(arr, 5)
     price = close[-1]
-    # 롱: 히스토리그램 2개 연속 양봉, 0선 돌파
     if positions["A"][symbol]['long'] is None:
-        if hist[-2] > 0 and hist[-1] > 0 and hist[-2] > hist[-3] and hist[-1] > hist[-2]:
+        if hist[-2] < 0 and hist[-1] > 0 and adx[-1] > 25:
             open_position("A", symbol, "long", price)
-    # 숏: 히스토리그램 2개 연속 음봉, 0선 하락
     if positions["A"][symbol]['short'] is None:
-        if hist[-2] < 0 and hist[-1] < 0 and hist[-2] < hist[-3] and hist[-1] < hist[-2]:
+        if hist[-2] > 0 and hist[-1] < 0 and adx[-1] > 25:
             open_position("A", symbol, "short", price)
     for side in ['long', 'short']:
         pos = positions["A"][symbol][side]
@@ -132,10 +143,14 @@ def analyze_A(symbol):
         entry = pos["entry"]
         pnl = (price - entry) / entry
         if side == "short": pnl *= -1
-        if pnl <= -(1-STOP):
+        lev = SYMBOLS[symbol]["leverage"]
+        real_pnl = pnl * lev * 100
+        total_fee_pct = TAKER_FEE * 2 * lev * 100
+        net_real_pnl = real_pnl - total_fee_pct
+        if net_real_pnl <= -(1-STOP)*100:
             close_position("A", symbol, side, price, "손절", force="sl")
             continue
-        if not pos["active_trail"] and pnl >= (TP-1):
+        if not pos["active_trail"] and net_real_pnl >= (TP-1)*100:
             pos["active_trail"] = True
             pos["peak"] = price
             send_telegram(f"[{STRATEGY_LABELS['A']}] {symbol} {side.upper()} 트레일링 활성화")
@@ -154,15 +169,12 @@ def analyze_B(symbol):
     if len(arr) < 20: return
     close = arr[:,4]
     _, _, hist = calc_macd(close)
-    adx = calc_adx(arr, 5)
     price = close[-1]
-    # 롱: hist 0선 상향돌파 & hist > 0.003 & ADX > 28
     if positions["B"][symbol]['long'] is None:
-        if hist[-2] < 0 and hist[-1] > 0 and abs(hist[-1]) > 0.003 and adx[-1] > 28:
+        if hist[-2] < 0 and hist[-1] > 0 and abs(hist[-1]) > 0.003:
             open_position("B", symbol, "long", price)
-    # 숏: hist 0선 하향돌파 & hist < -0.003 & ADX > 28
     if positions["B"][symbol]['short'] is None:
-        if hist[-2] > 0 and hist[-1] < 0 and abs(hist[-1]) > 0.003 and adx[-1] > 28:
+        if hist[-2] > 0 and hist[-1] < 0 and abs(hist[-1]) > 0.003:
             open_position("B", symbol, "short", price)
     for side in ['long', 'short']:
         pos = positions["B"][symbol][side]
@@ -170,10 +182,14 @@ def analyze_B(symbol):
         entry = pos["entry"]
         pnl = (price - entry) / entry
         if side == "short": pnl *= -1
-        if pnl <= -(1-STOP):
+        lev = SYMBOLS[symbol]["leverage"]
+        real_pnl = pnl * lev * 100
+        total_fee_pct = TAKER_FEE * 2 * lev * 100
+        net_real_pnl = real_pnl - total_fee_pct
+        if net_real_pnl <= -(1-STOP)*100:
             close_position("B", symbol, side, price, "손절", force="sl")
             continue
-        if not pos["active_trail"] and pnl >= (TP-1):
+        if not pos["active_trail"] and net_real_pnl >= (TP-1)*100:
             pos["active_trail"] = True
             pos["peak"] = price
             send_telegram(f"[{STRATEGY_LABELS['B']}] {symbol} {side.upper()} 트레일링 활성화")
@@ -186,6 +202,86 @@ def analyze_B(symbol):
                 pos["peak"] = min(pos["peak"], price)
                 if price >= pos["peak"] / TRAIL:
                     close_position("B", symbol, side, price, "익절(트레일링)", force="tp")
+
+def analyze_C(symbol):
+    arr = np.array(candles[symbol])
+    if len(arr) < 51: return
+    close = arr[:,4]
+    _, _, hist = calc_macd(close)
+    ma50 = calc_ma(close, 50)
+    price = close[-1]
+    if positions["C"][symbol]['long'] is None:
+        if hist[-2] < 0 and hist[-1] > 0 and price > ma50[-1]:
+            open_position("C", symbol, "long", price)
+    if positions["C"][symbol]['short'] is None:
+        if hist[-2] > 0 and hist[-1] < 0 and price < ma50[-1]:
+            open_position("C", symbol, "short", price)
+    for side in ['long', 'short']:
+        pos = positions["C"][symbol][side]
+        if not pos: continue
+        entry = pos["entry"]
+        pnl = (price - entry) / entry
+        if side == "short": pnl *= -1
+        lev = SYMBOLS[symbol]["leverage"]
+        real_pnl = pnl * lev * 100
+        total_fee_pct = TAKER_FEE * 2 * lev * 100
+        net_real_pnl = real_pnl - total_fee_pct
+        if net_real_pnl <= -(1-STOP)*100:
+            close_position("C", symbol, side, price, "손절", force="sl")
+            continue
+        if not pos["active_trail"] and net_real_pnl >= (TP-1)*100:
+            pos["active_trail"] = True
+            pos["peak"] = price
+            send_telegram(f"[{STRATEGY_LABELS['C']}] {symbol} {side.upper()} 트레일링 활성화")
+        if pos["active_trail"]:
+            if side == "long":
+                pos["peak"] = max(pos["peak"], price)
+                if price <= pos["peak"] * TRAIL:
+                    close_position("C", symbol, side, price, "익절(트레일링)", force="tp")
+            else:
+                pos["peak"] = min(pos["peak"], price)
+                if price >= pos["peak"] / TRAIL:
+                    close_position("C", symbol, side, price, "익절(트레일링)", force="tp")
+
+def analyze_D(symbol):
+    arr = np.array(candles[symbol])
+    if len(arr) < 20: return
+    close = arr[:,4]
+    _, _, hist = calc_macd(close)
+    adx = calc_adx(arr, 5)
+    price = close[-1]
+    if positions["D"][symbol]['long'] is None:
+        if hist[-2] < 0 and hist[-1] > 0 and adx[-1] > 25 and abs(hist[-1]) > 0.003:
+            open_position("D", symbol, "long", price)
+    if positions["D"][symbol]['short'] is None:
+        if hist[-2] > 0 and hist[-1] < 0 and adx[-1] > 25 and abs(hist[-1]) > 0.003:
+            open_position("D", symbol, "short", price)
+    for side in ['long', 'short']:
+        pos = positions["D"][symbol][side]
+        if not pos: continue
+        entry = pos["entry"]
+        pnl = (price - entry) / entry
+        if side == "short": pnl *= -1
+        lev = SYMBOLS[symbol]["leverage"]
+        real_pnl = pnl * lev * 100
+        total_fee_pct = TAKER_FEE * 2 * lev * 100
+        net_real_pnl = real_pnl - total_fee_pct
+        if net_real_pnl <= -(1-STOP)*100:
+            close_position("D", symbol, side, price, "손절", force="sl")
+            continue
+        if not pos["active_trail"] and net_real_pnl >= (TP-1)*100:
+            pos["active_trail"] = True
+            pos["peak"] = price
+            send_telegram(f"[{STRATEGY_LABELS['D']}] {symbol} {side.upper()} 트레일링 활성화")
+        if pos["active_trail"]:
+            if side == "long":
+                pos["peak"] = max(pos["peak"], price)
+                if price <= pos["peak"] * TRAIL:
+                    close_position("D", symbol, side, price, "익절(트레일링)", force="tp")
+            else:
+                pos["peak"] = min(pos["peak"], price)
+                if price >= pos["peak"] / TRAIL:
+                    close_position("D", symbol, side, price, "익절(트레일링)", force="tp")
 
 async def ws_loop():
     uri = "wss://stream.bybit.com/v5/public/linear"
@@ -225,6 +321,8 @@ async def ws_loop():
                                 if len(arr) > 200: arr.pop(0)
                                 analyze_A(s)
                                 analyze_B(s)
+                                analyze_C(s)
+                                analyze_D(s)
                     except asyncio.TimeoutError:
                         try:
                             await ws.ping()
@@ -238,7 +336,7 @@ async def ws_loop():
 def report_telegram():
     while report_flag:
         msg = []
-        for k in ['A','B']:
+        for k in ['A','B','C','D']:
             msg.append(STRATEGY_LABELS[k])
             for s in SYMBOLS:
                 for side in ['long','short']:
@@ -252,19 +350,21 @@ def report_telegram():
                         pnl = (price_now-entry)/entry*100
                         if side=="short": pnl *= -1
                         lev = SYMBOLS[s]["leverage"]
-                        real_pnl = pnl * lev
+                        real_pnl = pnl * lev * 100
+                        total_fee_pct = TAKER_FEE * 2 * lev * 100
+                        net_real_pnl = real_pnl - total_fee_pct
                         trail = "O" if pos.get("active_trail") else "X"
-                        msg.append(f"{s} {side}: 진입가 {entry} | 수익률 {real_pnl:.2f}% (레버 {lev}배, 거래소:{pnl:.2f}%) | 트레일:{trail}")
+                        msg.append(f"{s} {side}: 진입가 {entry} | 순수익률 {net_real_pnl:.2f}% | 트레일:{trail}")
                     else:
                         msg.append(f"{s} {side}: 포지션 없음")
             msg.append(f"현재 가상잔고: {balance[k]:.2f}")
-            msg.append(f"누적 익절: {tp_count[k]}회 / 누적 손절: {sl_count[k]}회")
-            msg.append("")
+            msg.append(f"누적 익절: {tp_count[k]}회 / 누적 손절: {sl_count[k]}회\n")
         send_telegram('\n'.join(msg))
         for _ in range(3600):
             if not report_flag: break
             time.sleep(1)
 
+# Flask webhook (/상태, /중지 등)
 app = Flask(__name__)
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def hook():
@@ -275,27 +375,14 @@ def hook():
         text = msg["message"].get("text", "")
         if str(chat_id) != str(TELEGRAM_CHAT_ID): return "no"
         if text == "/시작":
-            running_flag = True
-            report_flag = True
+            running_flag = True; report_flag = True
             send_telegram("✅ 자동매매 시작")
         elif text == "/중지":
-            running_flag = False
-            report_flag = False
-            send_telegram("⛔ 자동매매 중지\n모든 포지션 정리중...")
-            for k in ['A','B']:
-                for s in SYMBOLS:
-                    for side in ['long','short']:
-                        pos = positions[k][s][side]
-                        if pos:
-                            arr = candles.get(s)
-                            price_now = pos["entry"]
-                            if arr and len(arr)>0:
-                                price_now = arr[-1][4]
-                            close_position(k, s, side, price_now, "자동매매 중지(전체청산)")
-            send_telegram("✅ 모든 포지션 정리 완료")
+            running_flag = False; report_flag = False
+            send_telegram("⛔ 자동매매 중지")
         elif text == "/상태":
             msgtxt = []
-            for k in ['A','B']:
+            for k in ['A','B','C','D']:
                 msgtxt.append(STRATEGY_LABELS[k])
                 for s in SYMBOLS:
                     for side in ['long','short']:
@@ -308,13 +395,16 @@ def hook():
                                 price_now = arr[-1][4]
                             pnl = (price_now-entry)/entry*100
                             if side=="short": pnl *= -1
+                            lev = SYMBOLS[s]["leverage"]
+                            real_pnl = pnl * lev * 100
+                            total_fee_pct = TAKER_FEE * 2 * lev * 100
+                            net_real_pnl = real_pnl - total_fee_pct
                             trail = "O" if pos.get("active_trail") else "X"
-                            msgtxt.append(f"{s} {side}: 진입가 {entry} | 수익률 {pnl:.2f}% | 트레일:{trail}")
+                            msgtxt.append(f"{s} {side}: 진입가 {entry} | 순수익률 {net_real_pnl:.2f}% | 트레일:{trail}")
                         else:
                             msgtxt.append(f"{s} {side}: 포지션 없음")
                 msgtxt.append(f"현재 가상잔고: {balance[k]:.2f}")
-                msgtxt.append(f"누적 익절: {tp_count[k]}회 / 누적 손절: {sl_count[k]}회")
-                msgtxt.append("")
+                msgtxt.append(f"누적 익절: {tp_count[k]}회 / 누적 손절: {sl_count[k]}회\n")
             send_telegram('\n'.join(msgtxt))
     return "ok"
 
